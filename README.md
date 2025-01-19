@@ -14,9 +14,10 @@ docker run -it --rm --name analysis_container -p 8787:8787 -v $(pwd):/home/rstud
 Then open your web browser (preferably Chrome) and navigate to 
 `http://0.0.0.0:8787/`. The username is `rstudio`, and the password is `meta`.
 
-## Analysis scripts
+## Files in this repository
 These are the actively maintained files in this repository:
 
+```
 .
 └── analysis/
     ├── 2024_08_27_final_metaanalysis.csv // Data file listing all assessed studies
@@ -27,4 +28,4 @@ These are the actively maintained files in this repository:
     ├── compute_effect_size.R // Functions to compute effect sizes from reported statistics
     ├── utils.R // Higher level functions used to simplify analysis_script_public.Rmd
     └── Results // Folder where all the figures are saved from running the analysis_script_public.Rmd
-    
+```  
