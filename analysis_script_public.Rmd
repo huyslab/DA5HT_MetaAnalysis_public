@@ -1,0 +1,1681 @@
+---
+title: "The effect of dopaminergic and serotonergic manipulations on reward and punishment processing in humans: A Systematic Review and Meta-analysis"
+author: "Anahit Mkrtchian, Zeguo Qiu, Yaniv Abir"
+date: "2024-04-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+remotes::install_github("MathiasHarrer/dmetar", force = TRUE)
+
+# Load packages
+library('tidyverse')
+library('metafor')
+library('grDevices')
+library("testit")
+library("readxl")
+source("compute_effect_size.R")
+source("utils.R")
+library("GGally")
+library(here)
+library("meta")
+library("dmetar")
+library("reshape2")
+library("ggpubr")
+library("psych")
+library("MBESS")
+library("xtable")
+library("kableExtra")
+library(gt)
+library(pagedown)
+
+# Parameters
+w_method <- "rm_toster_default" # Method for computing d for within participant designs. using the Cousineau and Goulet-Pelletier (2021) method in toster: https://cloud.r-project.org/web/packages/TOSTER/vignettes/SMD_calcs.html#fn7
+w_method_w <- "dz" # only for within-subject designs
+include_vigour_baselineRTnonsign <- 1 # 1 if including all vigour studies - including the studies with data only for high reward but baseline is not significant, otherwise 0
+drug_interpret <- 1 # 1 if want to conduct the meta-analysis based on drug interpretation. 0 if according to drug profile
+if (drug_interpret == 1) { # 
+  savename_forest <- 'drug_accord_dosage'
+} else {
+  savename_forest <- 'drug_accord_orig_drugaction'
+}
+
+
+# Load data
+datAll <- read.csv("2024_08_27_final_metaanalysis.csv", strip.white = T)
+datAll_avPav <- read.csv("2024_08_27_aversive_pavlovian_w.csv", strip.white = T) # 5HT within-subject aversive pav 
+datAll_mb_w <- read.csv("2024_08_27_mb_w.csv", strip.white = T) # DA within-subject model-based/flexibility
+datAll_risk_w <- read.csv("2024_08_27_risk_w.csv", strip.white = T) # DA within-subject risk
+
+# Check the data
+assert("NAs in N drug",
+       sum(is.na(datAll$N_drug)) == 0)
+
+assert("NAs in N placebo",
+       sum(is.na(datAll$N_placebo)) == 0)
+
+
+```
+
+```{r compute_effect_size}
+
+# Compute r for within-subject studies if we can 
+datAll <- compute_r(datAll)
+hist(datAll$r_correlation, col = "lightblue", border = "black") # histogram of true correlations from data
+
+# Treat studies with implausible computed r values (above 1) as between-subject designs
+print(paste("Treating",
+            with(datAll, sum(r_correlation > 1, na.rm = T)), 
+            "within studies with implausible computed r values as between studies"))
+
+datAll <- datAll %>%
+  mutate(treat_as = factor(if_else((r_correlation > 1), "bw", treat_as, 
+                                   missing = "bw")))
+print(paste("Treating",
+            with(datAll, sum(design_true == 'w' & treat_as == 'bw') ), 
+            "total within studies treated as between studies"))
+
+########## compute effect sizes & variance(d) ###########
+# Compute d, var(d)
+datAll <- compute_d_vard(datAll)
+
+# Exclude missing d estimates
+print(paste("Excluding",
+            with(datAll, sum(is.na(d))), 
+            "studies with missing d values"))
+
+datAll <- datAll %>%
+  filter(!is.na(d))
+
+# calculate within-subject effect size only for aversive pavlovian category
+datAll_orig_w <- datAll_avPav %>%
+  mutate(d = ifelse("t" %in% names(datAll_avPav) & !is.na(t), t / sqrt(N_drug),
+                    ifelse("F" %in% names(datAll_avPav) & !is.na(F), sqrt(F) / sqrt(N_drug), NA)))
+datAll_orig_w <- datAll_orig_w %>% mutate(vard = (1/N_drug) + d^2/(2*N_drug))
+# datAll_orig_w <- datAll_orig_w %>% mutate(d=d*d.direction.new)
+
+
+# calculate within-subject effect size only for model-based category
+datAll_mb_w_DA <- datAll_mb_w %>%
+  mutate(d = ifelse("t" %in% names(datAll_mb_w) & !is.na(t), t / sqrt(N_drug),
+                    ifelse("F" %in% names(datAll_mb_w) & !is.na(F), sqrt(F) / sqrt(N_drug), NA)))
+datAll_mb_w_DA <- datAll_mb_w_DA %>% mutate(vard = (1/N_drug) + d^2/(2*N_drug))
+datAll_mb_w_DA <- datAll_mb_w_DA %>% mutate(
+    d = d * d.direction.new,  # Update column 'd'
+    drug_activity = if_else(Author == 'Robinson', 'antagonist', drug_activity)  # Conditionally update 'drug_activity'
+  )
+datAll_mb_w_DA <- datAll_mb_w_DA %>% filter(!is.na(d))
+
+# calculate within-subject effect size only for risk attitude category
+datAll_risk_w_DA <- datAll_risk_w %>%
+  mutate(d = ifelse("t" %in% names(datAll_risk_w) & !is.na(t), t / sqrt(N_drug),
+                    ifelse("F" %in% names(datAll_risk_w) & !is.na(F), sqrt(F) / sqrt(N_drug), NA)))
+datAll_risk_w_DA <- datAll_risk_w_DA %>% mutate(vard = (1/N_drug) + d^2/(2*N_drug))
+datAll_risk_w_DA <- datAll_risk_w_DA %>%   mutate(
+    d = d * d.direction.new,  # Update column 'd'
+    drug_activity = if_else(Author == 'Norbury', 'agonist', drug_activity)  # Conditionally update 'drug_activity'
+  )
+
+# change direction of d for all 5HT
+datAll <- datAll %>% mutate(d = ifelse(neurotransmitter == '5HT', d*-1, d))
+
+# change direction of d for DA low-dose agonist/antagonists
+if (drug_interpret == 1) {
+  datAll <- datAll %>%
+    mutate(
+      # Invert the values of `d` based on conditions
+      d = ifelse((AuthorY == "Frank, 2006" | AuthorY == "Jocham, 2011" | AuthorY == "Pizzagalli, 2008" | AuthorY == "Murray, 2019" | AuthorY == "Wagner, 2020" | (AuthorY == "Campbell-Meiklejohn, 2011" & neurotransmitter == 'DA') | AuthorY == "Admon, 2017" | AuthorY == "Erfanian Abdoust, 2024"), d * -1, d),
+      
+      # Invert drug_activity: 'agonist' becomes 'antagonist' and vice versa
+      drug_activity = ifelse(
+        (AuthorY == "Frank, 2006" | AuthorY == "Jocham, 2011" | AuthorY == "Pizzagalli, 2008" | AuthorY == "Murray, 2019" | AuthorY == "Wagner, 2020" | (AuthorY == "Campbell-Meiklejohn, 2011" & neurotransmitter == 'DA') | AuthorY == "Admon, 2017" | AuthorY == "Erfanian Abdoust, 2024"),
+        ifelse(drug_activity == "agonist", "antagonist", "agonist"),
+        drug_activity
+      )
+    )
+  
+  datAll_risk_w_DA <- datAll_risk_w_DA %>%
+    mutate(
+      # Invert the values of `d` based on conditions
+      d = ifelse((AuthorY == "Riba, 2008"), d * -1, d),
+      
+      # Invert drug_activity: 'agonist' becomes 'antagonist' and vice versa
+      drug_activity = ifelse(
+        (AuthorY == "Riba, 2008"),
+        ifelse(drug_activity == "agonist", "antagonist", "agonist"),
+        drug_activity
+      )
+    )
+
+  reverse_coded_studies <- c(
+  "Frank, 2006", "Jocham, 2011", "Pizzagalli, 2008", "Murray, 2019",
+  "Wagner, 2020", "Admon, 2017", "Erfanian Abdoust, 2024", "Campbell-Meiklejohn, 2011", 
+  "Riba, 2008")
+} else if (drug_interpret == 0) {
+  datAll <- datAll
+  reverse_coded_studies <- c()
+}
+
+
+# rename reward vigour_baselineRTnonsign to vigour 
+if (include_vigour_baselineRTnonsign == 1) {
+  datAll <- datAll %>% mutate( Category = if_else(Category == 'reward vigour_baselinertnonsign',                                                "reward vigour", Category))
+} else if (include_vigour_baselineRTnonsign == 0) {
+  datAll <- datAll %>% filter(Category !='reward vigour_baselinertnonsign')
+}
+
+datRMA <- datAll
+datRMA$acute <- as.factor(datRMA$acute)
+
+cat_counts <- datRMA %>%
+  group_by(neurotransmitter, Category) %>%
+  summarize(category_n = n(),
+            .groups = "drop")
+
+# check final sample sizes included (+ 3 within aversive Pavlovian 5HT, + DA: 3 model-based, + 2 risk attitude)
+print(datAll %>% 
+        group_by(neurotransmitter)  %>% 
+        summarise(n_included = n_distinct(paste0(uniqueID))))
+
+print(datAll %>% 
+        filter(design_true=='w') %>%
+        distinct(uniqueID, .keep_all = TRUE) %>%
+        group_by(neurotransmitter, treat_as)  %>% 
+        summarise(count = n()))
+
+# Split by neuromodulator
+dat5HT <- datRMA %>% filter(neurotransmitter == "5HT")
+
+datDA <- datRMA %>% filter(neurotransmitter == "DA")
+
+
+```
+
+```{r supplementary: demographics table & effect size comparison}
+
+#### DEMOGRAPHICS % just extract the columns of interest
+datDA_dem <- bind_rows(
+  datDA  %>% select(N_placebo, N_drug), 
+  datAll_mb_w_DA %>% filter(Include_final == "N need data incl w") %>% select(N_placebo, N_drug),
+  datAll_risk_w_DA %>% filter(Include_final == "N need data incl w") %>% select(N_placebo, N_drug)
+) %>%
+  summarise(
+    total_N_placebo = sum(N_placebo, na.rm = TRUE),
+    total_N_drug = sum(N_drug, na.rm = TRUE)
+  )
+
+
+dat5HT_dem <- bind_rows(
+  dat5HT %>% select(N_placebo, N_drug),
+  datAll_orig_w %>% filter(Include_final == "N need data incl w") %>% select(N_placebo, N_drug)) %>%
+  summarise(
+    total_N_placebo = sum(N_placebo),
+    total_N_drug = sum(N_drug)
+  )
+
+
+######## TABLE S1 ######## 
+
+# Function to summarize data based on category filters
+summarize_by_category <- function(data, category_filter, category_label) {
+  data %>%
+    filter({{ category_filter }}) %>%   # Use {{ }} to correctly evaluate column in filter
+    group_by(neurotransmitter) %>%
+    summarise(
+      No_of_studies = n(),
+      N_placebo_total = sum(N_placebo, na.rm = TRUE),
+      N_drug_total = sum(N_drug, na.rm = TRUE)
+    ) %>%
+    pivot_wider(
+      names_from = neurotransmitter,
+      values_from = c(No_of_studies, N_placebo_total, N_drug_total),
+      names_glue = "{neurotransmitter}_{.value}"
+    ) %>%
+    mutate(Category = category_label)
+}
+
+# Overall reward summary (excluding certain categories)
+summary_table_overall_r <- summarize_by_category(
+  datRMA,
+  Category != 'reward sensitivity' & Category != 'punishment sensitivity' & 
+    Category != 'risk attitude' & Category != 'model-based' & 
+    Category != 'punishment learning sensitivity' & Category != 'aversive pavlovian' & 
+    !(AuthorY == 'Weber, 2016' & task_name == 'DD'),
+  "Overall reward"
+)
+
+# Overall punishment summary (including specific categories)
+summary_table_overall_p <- summarize_by_category(
+  datRMA,
+  Category == 'punishment learning sensitivity' | Category == 'aversive pavlovian',
+  "Overall punishment"
+)
+
+# Category-specific summaries (excluding reward and punishment sensitivities)
+summary_table <- datRMA %>%
+  filter(Category != 'reward sensitivity', Category != 'punishment sensitivity') %>%
+  group_by(Category, neurotransmitter) %>%
+  summarise(
+    No_of_studies = n(),
+    N_placebo_total = sum(N_placebo, na.rm = TRUE),
+    N_drug_total = sum(N_drug, na.rm = TRUE)
+  ) %>%
+  pivot_wider(
+    names_from = neurotransmitter,
+    values_from = c(No_of_studies, N_placebo_total, N_drug_total),
+    names_glue = "{neurotransmitter}_{.value}"
+  )
+
+# within aversive pavlovian
+summary_table_av_pav_w <- datAll_orig_w %>%
+  group_by(Category, neurotransmitter) %>%
+  summarise(
+    No_of_studies = n(),
+    N_placebo_total = sum(N_placebo, na.rm = TRUE),
+    N_drug_total = sum(N_drug, na.rm = TRUE)
+  ) %>%
+  pivot_wider(
+    names_from = neurotransmitter,
+    values_from = c(No_of_studies, N_placebo_total, N_drug_total),
+    names_glue = "{neurotransmitter}_{.value}"
+  ) %>%
+  mutate(Category = 'aversive pavlovian within-subjects')
+
+summary_table_risk_w <- datAll_risk_w_DA %>%
+  group_by(Category, neurotransmitter) %>%
+  summarise(
+    No_of_studies = n(),
+    N_placebo_total = sum(N_placebo, na.rm = TRUE),
+    N_drug_total = sum(N_drug, na.rm = TRUE)
+  ) %>%
+  pivot_wider(
+    names_from = neurotransmitter,
+    values_from = c(No_of_studies, N_placebo_total, N_drug_total),
+    names_glue = "{neurotransmitter}_{.value}"
+  ) %>%
+  mutate(Category = 'risk attitude within-subjects')
+
+summary_table_mb_w <- datAll_mb_w_DA %>%
+  group_by(Category, neurotransmitter) %>%
+  summarise(
+    No_of_studies = n(),
+    N_placebo_total = sum(N_placebo, na.rm = TRUE),
+    N_drug_total = sum(N_drug, na.rm = TRUE)
+  ) %>%
+  pivot_wider(
+    names_from = neurotransmitter,
+    values_from = c(No_of_studies, N_placebo_total, N_drug_total),
+    names_glue = "{neurotransmitter}_{.value}"
+  ) %>%
+  mutate(Category = 'model-based within-subjects')
+
+# Combine all tables
+combined_summary_table <- bind_rows(
+  summary_table_overall_r, 
+  summary_table_overall_p, 
+  summary_table,
+  summary_table_av_pav_w,
+  summary_table_risk_w,
+  summary_table_mb_w
+)
+# Reorder the columns in the desired order
+reordered_table <- combined_summary_table %>%
+  select(Category, 
+         DA_No_of_studies, DA_N_placebo_total, DA_N_drug_total,
+         `5HT_No_of_studies`, `5HT_N_placebo_total`, `5HT_N_drug_total`)
+reordered_table$Category <- paste0(
+  toupper(substr(reordered_table$Category, 1, 1)), # Capitalize first letter
+  tolower(substr(reordered_table$Category, 2, nchar(reordered_table$Category))) # Rest in lowercase
+)
+
+# Create the table and output it as LaTeX code
+latex_table <- kable(reordered_table, "latex", booktabs = TRUE) %>%
+  add_header_above(c(" " = 1, "Dopamine" = 3, "Serotonin" = 3))
+
+latex_table <- xtable(reordered_table)
+print(latex_table, type = "latex")
+
+
+########## Figure: compare within-sub effect sizes and variances #######
+datAll_all_d <- compare_d_vard(datAll)
+datAll_all_d_w <- datAll_all_d %>% filter(treat_as == 'w')
+
+pdf(paste0("./results/suppl/effectsize_comparison.pdf"), width = 15,
+      height = 7) # Specify the file to save the plots
+
+# Calculate correlation coefficients (rounded to 2 decimals)
+cor_av_algina <- round(cor(datAll_all_d_w$d_rm_orig, datAll_all_d_w$d_av_algina), 2)
+cor_bw <- round(cor(datAll_all_d_w$d_rm_orig, datAll_all_d_w$d_bw), 2)
+cor_z <- round(cor(datAll_all_d_w$d_rm_orig, datAll_all_d_w$d_z), 2)
+
+# Reshape data for the first plot
+dat_melt <- melt(datAll_all_d_w, id.vars = "d_rm_orig", measure.vars = c("d_av_algina", "d_bw", "d_z"))
+
+# Text labels with correlation coefficients for first plot
+label_av_algina <- bquote(d[av] * "," ~ "r=" ~ .(cor_av_algina))
+label_bw <- bquote(d * "," ~ "r=" ~ .(cor_bw))
+label_z <- bquote(d[z] * "," ~ "r=" ~ .(cor_z))
+
+# First plot: d_rm_orig vs d_av_algina, d_bw, d_z
+plot1 <- ggplot(dat_melt, aes(x = value, y = d_rm_orig, color = variable, shape = variable)) +
+  geom_point(alpha = 0.3, size = 5) +
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_abline(intercept = 0, slope = 1, color = "gray", linetype = "dashed", linewidth = 1) +
+  theme_minimal() +
+  labs(y = expression(d[rm])) +
+  scale_color_manual(values = c("d_av_algina" = "#842d72", "d_bw" = "#ee316b", "d_z" = "#fdb138"),
+                     labels = c(label_av_algina, label_bw, label_z)) +
+  scale_shape_manual(values = c(16, 17, 18),
+                     labels = c(label_av_algina, label_bw, label_z)) +
+  labs(x = "Effect size") +
+  theme_classic() +
+  xlim(0, 1) +
+  ylim(0, 1) +
+  theme(text = element_text(size = 20),
+        legend.title = element_blank(),
+        legend.position = c(0, 0.95), 
+        legend.justification = c(0, 1),
+        legend.background = element_rect(fill = scales::alpha('white', 0))
+        )
+
+# Reshape data for the second plot
+dat_melt_vard <- melt(datAll_all_d_w, id.vars = "vard_rm_orig", 
+                      measure.vars = c("vard_av_algina", "vard_bw", "vard_z", "vard_rm_toster_nct"))
+
+# Calculate correlation coefficients for second plot
+cor_v_algina <- round(cor(datAll_all_d_w$vard_rm_orig, datAll_all_d_w$vard_av_algina), 2)
+cor_v_nct <- round(cor(datAll_all_d_w$vard_rm_orig, datAll_all_d_w$vard_rm_toster_nct), 2)
+cor_v_bw <- round(cor(datAll_all_d_w$vard_rm_orig, datAll_all_d_w$vard_bw), 2)
+cor_v_z <- round(cor(datAll_all_d_w$vard_rm_orig, datAll_all_d_w$vard_z), 2)
+cor_v_algina_rm <- round(cor(datAll_all_d_w$vard_rm_orig, datAll_all_d_w$vard_rm_algina), 2)
+
+
+# Text labels with correlation coefficients for second plot
+label_v_algina <- bquote(var(d[av]) * "," ~ "r=" * .(cor_v_algina))
+label_v_nct <- bquote(var(d[rm_nct]) * "," ~ "r=" * .(cor_v_nct))
+label_v_bw <- bquote(var(d) * "," ~ "r=" * .(cor_v_bw))
+label_v_z <- bquote(var(d[z]) * "," ~ "r=" * .(cor_v_z))
+label_v_algina_rm <- bquote(var(d[rm_ak]) * "," ~ "r=" * .(cor_v_algina_rm))
+
+# Second plot: vard_rm_orig vs vard_bw, vard_z
+plot2 <- ggplot(dat_melt_vard, aes(x = value, y = vard_rm_orig, color = variable, shape = variable)) +
+  geom_point(alpha = 0.4, size = 5) +
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_abline(intercept = 0, slope = 1, color = "gray", linetype = "dashed", linewidth = 1) +
+  theme_minimal() +
+  labs(y = expression(var(d[rm]))) + # e2c39b
+  scale_color_manual(values = c("vard_av_algina" = "#842d72", "vard_bw"= "#ee316b", "vard_z" = "#fdb138",  "vard_rm_toster_nct"= "#e2c39b"),
+                     labels = c(label_v_algina, label_v_bw, label_v_z, label_v_nct)) +
+  scale_shape_manual(values = c(16, 17, 18, 15, 12),
+                     labels = c(label_v_algina, label_v_bw, label_v_z, label_v_nct)) +
+  labs(x = "Variance of effect size") +
+  theme_classic() +
+  xlim(0, 0.45) +
+  ylim(0, 0.45) +
+  theme(text = element_text(size = 20),
+        legend.title = element_blank(),
+        legend.position = c(0, 1), 
+        legend.justification = c(0, 1.1),
+        legend.background = element_rect(fill = scales::alpha('white', 0)))
+
+# Combine the two plots side by side
+ggarrange(plot1, plot2, ncol = 2, nrow = 1)
+
+dev.off()
+
+#######################################################
+
+```
+
+```{r rma: run meta-analyses}
+
+category_rma <- function(category, data, cat_type) {
+  # Filter the data based on category type
+  if (category=="" & cat_type == "") {
+    rma_result <- rma(
+      yi = d,      # yi represents the effect sizes
+      vi = vard,   # vi represents the variance of the effect sizes
+      data = data,
+      method = "REML",
+      slab = AuthorY 
+    )
+  } else {
+    if (cat_type == 'secondary') {
+      data_filtered <- filter(data, secondary_category == category)
+    } else {
+      data_filtered <- filter(data, Category == category)
+    }
+    # Perform the rma analysis
+    rma_result <- rma(
+      yi = d,      # yi represents the effect sizes
+      vi = vard,   # vi represents the variance of the effect sizes
+      data = data_filtered,
+      method = "REML",
+      slab = AuthorY
+    )
+  }
+  
+  return(rma_result)
+}
+
+
+# drop irrelevant categories
+dat5HT_final_cat <- dat5HT %>% filter(Category != 'reward sensitivity', Category != 'punishment sensitivity' )
+datDA_final_cat <- datDA %>% filter(Category != 'reward sensitivity', Category != 'punishment sensitivity' )
+dat5HT_filter <- dat5HT %>% filter(secondary_category!= "")
+datDA_filter <- datDA %>% filter(secondary_category!= "", secondary_category!= "punishment learning")
+
+dat5HT_final_overall_r <- dat5HT_final_cat %>% filter(Category != 'risk attitude', Category != 'model-based', Category != 'aversive pavlovian', Category != 'punishment learning sensitivity') %>% mutate(d = ifelse (Category == 'reward discounting', d * -1, d))
+dat5HT_final_overall_p <- dat5HT_final_cat %>% filter(Category == 'aversive pavlovian' | Category == 'punishment learning sensitivity')
+
+# overall effects - remove duplicate participant studies: Weber, 2016; Westbrook 2024;
+datDA_final_overall_r <- datDA_final_cat %>% filter(Category != 'risk attitude', Category != 'model-based', Category != 'aversive pavlovian', Category != 'punishment learning sensitivity', !(AuthorY == 'Weber, 2016' & task_name == 'DD'), !(AuthorY == 'Westbrook, 2024' & task_name == 'PILT WM')) %>% mutate(d = ifelse (Category == 'reward discounting', d * -1, d))
+datDA_final_overall_p <- datDA_final_cat %>% filter(Category == 'aversive pavlovian' | Category == 'punishment learning sensitivity')
+
+
+rma_5HT_overall_r <- category_rma("", dat5HT_final_overall_r, "")
+rma_5HT_overall_p <- category_rma("",dat5HT_final_overall_p, "")
+rma_DA_overall_r <- category_rma("",datDA_final_overall_r, "")
+rma_DA_overall_p <- category_rma("",datDA_final_overall_p, "")
+
+
+rma_5HT <- setNames(lapply(unique(dat5HT_final_cat$Category), category_rma, data = dat5HT_final_cat, cat_type = "primary"),
+                    unique(dat5HT_final_cat$Category))
+rma_5HT_secondary <- setNames(lapply(unique(dat5HT_filter$secondary_category), category_rma, data = dat5HT_filter, cat_type = "secondary"),
+                              unique(dat5HT_filter$secondary_category))
+
+rma_DA <- setNames(lapply(unique(datDA_final_cat$Category), category_rma, data = datDA_final_cat, cat_type = "primary"),
+                   unique(datDA_final_cat$Category))
+rma_DA_secondary <- setNames(lapply(unique(datDA_filter$secondary_category), category_rma, data = datDA_filter, cat_type = "secondary"),
+                             unique(datDA_filter$secondary_category))
+
+
+rma_5HT_av_pav_w <- category_rma("", datAll_orig_w, "")
+rma_DA_mb_w <- category_rma("", datAll_mb_w_DA, "")
+rma_DA_risk_w <- category_rma("", datAll_risk_w_DA, "")
+
+
+##### redo meta-analysis with the meta package because their forest plot function allows specifying the layout into JAMA format
+# Define the new function using the 'meta' package
+category_meta <- function(category, data, cat_type) {
+  # Filter the data based on category type
+  if (category == "" & cat_type == "") {
+    meta_result <- metagen(
+      TE = d,                # TE represents the effect sizes
+      seTE = sqrt(vard),     # seTE represents the standard errors of the effect sizes
+      data = data,
+      method.tau = "REML",
+      studlab = AuthorY, 
+      sm = "SMD", 
+      comb.fixed = FALSE, 
+      comb.random = TRUE
+    )
+  } else {
+    if (cat_type == 'secondary') {
+      data_filtered <- filter(data, secondary_category == category)
+    } else {
+      data_filtered <- filter(data, Category == category)
+    }
+    # Perform the metagen analysis
+    meta_result <- metagen(
+      TE = d,
+      seTE = sqrt(vard),
+      data = data_filtered,
+      method.tau = "REML",
+      studlab = AuthorY, 
+      sm = "SMD", 
+      comb.fixed = FALSE, 
+      comb.random = TRUE
+    )
+  }
+  
+  return(meta_result)
+}
+
+
+# Perform meta-analyses and add '_meta' to the object names
+rma_5HT_overall_r_meta <- category_meta("", dat5HT_final_overall_r, "")
+rma_5HT_overall_p_meta <- category_meta("", dat5HT_final_overall_p, "")
+rma_DA_overall_r_meta  <- category_meta("", datDA_final_overall_r, "")
+rma_DA_overall_p_meta  <- category_meta("", datDA_final_overall_p, "")
+
+rma_5HT_meta <- setNames(
+  lapply(unique(dat5HT_final_cat$Category), category_meta, data = dat5HT_final_cat, cat_type = "primary"),
+  unique(dat5HT_final_cat$Category)
+)
+
+rma_5HT_secondary_meta <- setNames(
+  lapply(unique(dat5HT_filter$secondary_category), category_meta, data = dat5HT_filter, cat_type = "secondary"),
+  unique(dat5HT_filter$secondary_category)
+)
+
+rma_DA_meta <- setNames(
+  lapply(unique(datDA_final_cat$Category), category_meta, data = datDA_final_cat, cat_type = "primary"),
+  unique(datDA_final_cat$Category)
+)
+
+rma_DA_secondary_meta <- setNames(
+  lapply(unique(datDA_filter$secondary_category), category_meta, data = datDA_filter, cat_type = "secondary"),
+  unique(datDA_filter$secondary_category)
+)
+
+```
+
+```{r create forest plots used in PAPER, message=FALSE, warning=FALSE}
+
+rma_simple_forest <- function(category,
+                              rma_list,
+                              neuromodulator,
+                              category_labels,
+                              category_headers,
+                              savename,
+                              width = 8,
+                              # width = 7.629921,
+                              # width = 6.629921,
+                              # height = 3.5,
+                              height = 3,
+                              expand_height = T,
+                              transf=NULL,
+                              transf_sign = 1,
+                              cex = 0.7
+) {
+  
+  if (savename == 'drug_accord_dosage') {
+    results_path <- paste0("./results/JAMA2_rma_forest_", neuromodulator, "_",
+                           gsub(" ", "_", tolower(category))
+                           , '_', savename_forest, ".pdf")
+  } else if (savename == 'drug_accord_orig_drugaction' | startsWith(savename, 'drug_orig_overall')) {
+    results_path <-  paste0("./results/according_to_orig_drugactivity/JAMA2_rma_forest_", neuromodulator, "_",
+                            gsub(" ", "_", tolower(category))
+                            , '_',  savename, '_', savename_forest, ".pdf")
+  } else if (savename == 'secondary_cat') {
+    results_path <- paste0("./results/second_category/JAMA2_rma_forest_", neuromodulator, "_",
+                           gsub(" ", "_", tolower(category))
+                           , '_', savename_forest, ".pdf")
+  } else if (startsWith(savename, "overall")) {
+    results_path <- paste0("./results/JAMA2_rma_forest_", neuromodulator, "_", savename, '_', savename_forest, ".pdf")
+    
+  } else if (startsWith(savename, "aversive pavl w")) {
+    results_path <- paste0("./results/suppl/JAMA2_rma_forest_", neuromodulator, "_", savename, '_', savename_forest, ".pdf")
+    
+  } else if (startsWith(savename, "mb w")) {
+    results_path <- paste0("./results/suppl/JAMA2_rma_forest_", neuromodulator, "_", savename, '_', savename_forest, ".pdf")
+
+  } else if (startsWith(savename, "risk w")) {
+    results_path <- paste0("./results/suppl/JAMA2_rma_forest_", neuromodulator, "_", savename, '_', savename_forest, ".pdf")
+
+  }
+  
+  if (category=="") {
+    rma_model <- rma_list
+    cat_label <- 'overall'
+    if (savename == "overall_r" | savename == "drug_orig_overall_r") {
+      cat_header <- c("Increased reward\nfunction", "Decreased reward\nfunction")
+    } else if ((savename == "overall_p" | savename == "drug_orig_overall_p")) {
+      cat_header <- c("Increased punishment\nfunction", "Decreased punishment\nfunction")
+    }
+  } else {
+    if (savename == "aversive pavl w" | savename == "mb w" | savename == "risk w") {
+      rma_model <- rma_list
+    } else {
+      rma_model <- rma_list[[category]]
+    }
+    cat_label <- category_labels[[category]]
+    cat_header <- category_headers[[category]]
+    # Default category label
+    if (is.null(category_labels[[category]])){
+      category_labels[[category]] = category
+    }
+  }
+  
+  
+  if(expand_height){
+    height <- height * 0.85 + height * 0.15 * (rma_model$k / 3)
+  }
+  
+  # par(mar = c(4,5,0,5))  # Adjust margins as needed (bottom, left, top, right)
+  par(mar = c(4, 4, 0, 2))  # Adjusted margins
+  
+  
+  # Helper function
+  capitalize_first_letter <- function(text) {
+    substr(text, 1, 1) <- toupper(substr(text, 1, 1))
+    return(text)
+  }
+  
+
+  
+  # Create figure first time - before adding Ns
+  p <- forest(
+    rma_model,
+    header = TRUE,
+    # xlab = paste("Effect of upregulating", neuromodulator, "on", cat_label),
+    order = row_number(paste(
+      drug_activity, drug_category, drug_dose, as.character(Year), Author
+    )),
+    slab = (paste0(
+      AuthorY, " (", ifelse(grepl("^[A-Z]+$", drug_dose), drug_dose, capitalize_first_letter(drug_dose)), ")"
+    )),
+    pch = 19,    
+    transf = transf,
+    mar = c(0,0,0,0),
+    # colout = ifelse(drug_activity == "agonist", "blue", "red"),
+    cex = cex
+  )
+  
+  # Capture results into pdf
+  pdf(file.path(results_path),
+      width = width,
+      height = height)
+  
+  rng <- p$alim[2] - p$alim[1]
+  # xlim <- c(p$alim[1] - rng * 5, #change to make bars closer to right side
+  #           p$alim[2] + rng * 1.2)
+  xlim <- c(p$alim[1] - rng * 5.3, p$alim[2] + rng * 0.5)
+  xlim <- round(xlim, digits = 2)
+  left_space <- p$alim[1] - xlim[1]
+  
+  # xlim <- c(min(rma_model$yi) - 1, max(rma_model$yi) + 1)
+  # Determine the position for the annotations (effect sizes and CIs)
+  # Let's say we want them at the left edge of the plot area
+  # annotation_xpos <- xlim[1] + 0.1 * diff(xlim)  # Adjust 0.1 as needed
+  
+  # print(paste0("xlim", xlim))
+  # print(paste0("left_space", left_space))
+  # 
+  
+  # Create figure second time - adding Ns and other headers
+  # xpos_n <- 0.35
+  # xpos_drug <- 0.60
+  xpos_n <- 0.32
+  xpos_drug <- 0.45
+  overall_effect_size <- transf_sign * rma_model$b  # Retrieve the overall effect size
+  
+  plot_width <- diff(xlim)
+  # Define positions for the study labels and annotations
+  slab_xpos <- xlim[1] + 0.05 * plot_width       # Position for study labels
+  # slab_xpos <- xlim[1] + left_space * xpos_drug
+  annotation_xpos <- xlim[1] + 0.7 * plot_width  # Position for annotations
+  # Adjust the multipliers (0.05, 0.35) to position the labels appropriately.
+  
+  # Prepare ilab.xpos positions
+  ilab_xpos <- c(
+    xlim[1] + left_space * xpos_drug,
+    xlim[1] + left_space * xpos_n
+  )
+  
+  forest(
+    rma_model,
+    # xlab = paste("Effect of upregulating", neuromodulator, "on", cat_label),
+    xlab = "SMD (95% CI)",
+    order = row_number(paste(
+      drug_activity, drug_category, drug_dose, as.character(Year), Author
+    )),
+    slab = AuthorY,
+    transf = transf,
+    mar = c(0,0,0,0),
+    xlim = xlim,
+    ilab = cbind(ifelse(grepl("^[A-Z]+$", drug_dose), drug_dose, capitalize_first_letter(drug_dose)),
+                 ifelse(rma_model$data$treat_as == "w", N_drug, paste(N_drug, N_placebo, sep = ", "))),
+    ilab.xpos =ilab_xpos,
+    ilab.pos = 4,
+    # header = "Study",
+    colout = ifelse(drug_activity == "agonist", "#5e9390", "#e8959a"),  #e6c3e6
+    cex = cex,
+    pch = 19,
+    # refline = c(0,overall_effect_size), 
+    refline = c(0),
+    efac=c(0,2),
+    col = "grey",
+    mlab = "Random-effects meta-analysis:",
+    textpos = c(slab_xpos, annotation_xpos)
+    # showweights=TRUE
+  )
+  
+  
+  # # Add a vertical dotted line through the overall effect size
+  # overall_effect_size <- transf_sign * rma_model$b  # Retrieve the overall effect size
+  # abline(v = overall_effect_size, lty = 2, col = "black")  # Dotted line through the overall effect size
+  # segments(x0 = overall_effect_size, y0 = 0.045, x1 = overall_effect_size, y1 = rma_model$k + 0.955, lty = 1,  lwd = 0.5 , col = "gray")
+  
+  # continue the vertical refline
+  segments(x0 = 0, y0 = rma_model$k+1, x1 = 0, y1 = rma_model$k + 3, lty = 3,  lwd = 1 , col = "black")
+  
+  ## add a horizontal line 
+  segments(x0 = xlim[1], y0 = rma_model$k+1, x1 = xlim[2], y1 = rma_model$k+1, lty = 1,  lwd = 3 , col = "white")
+  
+  segments(x0 = xlim[1], y0 = 0, x1 = xlim[2], y1 = 0, lty = 1,  lwd = 1.5 , col = "white")
+  segments(x0 = slab_xpos, y0 = 0, x1 = annotation_xpos, y1 = 0, lty = 1,  lwd = 1 , col = "black") 
+  segments(x0 = slab_xpos, y0 = rma_model$k+1, x1 = annotation_xpos, y1 = rma_model$k+1, lty = 1,  lwd = 1 , col = "black") 
+
+   
+  # Re-plot the points
+  y_coords <- p$rows  # Y-axis positions for studies
+  plot_data <- data.frame(
+    yi = rma_model$yi,
+    ci.lb = rma_model$ci.lb,
+    ci.ub = rma_model$ci.ub,
+    drug_activity = rma_model$data$drug_activity,
+    drug_category = rma_model$data$drug_category,
+    drug_dose = rma_model$data$drug_dose,
+    Year = rma_model$data$Year,
+    Author = rma_model$data$Author,
+    AuthorY = rma_model$data$AuthorY,
+    N_drug = rma_model$data$N_drug,
+    N_placebo = rma_model$data$N_placebo,
+    treat_as = rma_model$data$treat_as
+  )
+  # Generate order indices
+  order_indices <- order(plot_data$drug_activity, plot_data$drug_category, plot_data$drug_dose, plot_data$Year, plot_data$Author)
+  # Reorder the data frame
+  plot_data <- plot_data[order_indices, ]
+  # # Reset row names
+  row.names(plot_data) <- NULL
+  
+  wi <- weights(rma_model)
+  wi <- wi[order_indices]
+  wi_scaled <- sqrt(wi / max(wi))
+  cex_points <- cex * wi_scaled * 1.5
+  
+  # points(
+  #   x = transf_sign * plot_data$yi,
+  #   y = rev(y_coords),
+  #   pch = 19,
+  #   col = adjustcolor(ifelse(plot_data$drug_activity == "agonist", "blue", "blue"), alpha.f = 0.1),
+  #   cex = p$psize
+  # )
+  
+  text(c(slab_xpos, xlim[1] + left_space * xpos_drug, xlim[1] + xpos_n * left_space, xlim[1] + 0.55 * plot_width), rma_model$k+1.5,
+       c("Study", "Drug, dose", "N(Drug, Pla)", "SMD [95% CI]"), font=2, pos = 4, cex = cex)
+  
+  text(c(-0.1), rma_model$k+2, cat_header[1], font=2, pos = 4, cex = 0.5)
+  text(c(p$alim[2]*0.09), rma_model$k+2, cat_header[2], font=2, pos = 2, cex = 0.5)
+  
+  # Finalize figure saving
+  dev.off()
+  # return(invisible())
+  # return(p)
+  return(plot_data)
+  
+}
+
+category_labels <- list(
+  `reward vigour` = "vigour of action to gain reward",
+  `reward vigour secondary` = "vigour of action to gain reward secondary",
+  `punishment vigour` = "vigour of action to gain punishment",
+  `risk attitude` = "risk attitude",
+  `reward learning` = "rew learning",
+  `reward sensitivity` = "sens reward",
+  `reward learning sensitivity` = "learning from reward",
+  `punishment learning` = "pun learning",
+  `punishment sensitivity` = "sens punishment",
+  `punishment learning sensitivity` = "learning from punishment",
+  `model-based` = "model-based control",
+  `aversive pavlovian` = "aversive Pavlovian bias",
+  `appetitive pavlovian` = "appetitive Pavlovian bias",
+  `reversal` = "learning after reversal",
+  `reward discounting` = "discounting reward by effort or time")
+
+category_headers <- list(
+  `reward vigour` = c("Faster response\nto reward", "Slower response\nto reward"),
+  `reward vigour secondary` = c("Faster response\nto reward", "Slower response\nto reward"),
+  `risk attitude` = c("More risk-seeking", "More risk-averse"),
+  `reward learning` = c("Increase reward\nlearning", "Decrease reward\nlearning"),
+  `reward sensitivity` = c("Increase reward\nsensitivity", "Decrease reward\nsensitivity"),
+  `reward learning sensitivity` = c("Increase reward\nlearning/sensitivity", "Decrease reward\nlearning/sensitivity"),
+  `punishment learning` = c("Increase punishment\nlearning", "Decrease punishment\nlearning"),
+  `punishment sensitivity` = c("Increase punishment\nsensitivity", "Decrease punishment\nsensitivity"),
+  `punishment learning sensitivity` = c("Increase punishment\nlearning/sensitivity", "Decrease punishment\nlearning/sensitivity"),
+  `model-based` = c("Increase model-\nbased learning/\nflexibility", "Decrease model-\nbased learning/\nflexibility"),
+  `aversive pavlovian` = c("Increase aversive\nPavlovian bias", "Decrease aversive\nPavlovian bias"),
+  `appetitive pavlovian` = c("Increase appetitive\nPavlovian bias", "Decrease appetitive\nPavlovian bias"),
+  `reward discounting` = c("Discount rewards\nmore", "Discount rewards\nless"))
+
+lapply(unique(dat5HT_final_cat$Category),
+       rma_simple_forest,
+       rma_5HT,
+       "5-HT",
+       category_labels,
+       category_headers,
+       savename_forest)
+
+lapply(unique(datDA_final_cat$Category),
+       rma_simple_forest,
+       rma_DA,
+       "DA",
+       category_labels,
+       category_headers,
+       savename_forest)
+
+
+lapply(unique(dat5HT_filter$secondary_category),
+       rma_simple_forest,
+       rma_5HT_secondary,
+       "5-HT",
+       category_labels,
+       category_headers,
+       'secondary_cat')
+
+lapply(unique(datDA_filter$secondary_category),
+       rma_simple_forest,
+       rma_DA_secondary,
+       "DA",
+       category_labels,
+       category_headers,
+       'secondary_cat')
+
+
+
+if (savename_forest=='drug_accord_orig_drugaction') {
+  rma_simple_forest("",rma_DA_overall_r,"DA",category_labels,category_headers, 'drug_orig_overall_r')
+  rma_simple_forest("",rma_DA_overall_p,  "DA",category_labels, category_headers,'drug_orig_overall_p')
+  rma_simple_forest("",rma_5HT_overall_r,  "5HT",category_labels,category_headers,'drug_orig_overall_r')
+  rma_simple_forest("",rma_5HT_overall_p,  "5HT",category_labels,category_headers,'drug_orig_overall_p')
+} else {
+  rma_simple_forest("",rma_DA_overall_r,"DA",category_labels,category_headers, 'overall_r')
+  rma_simple_forest("",rma_DA_overall_p,  "DA",category_labels, category_headers,'overall_p')
+  rma_simple_forest("",rma_5HT_overall_r,  "5HT",category_labels,category_headers,'overall_r')
+  rma_simple_forest("",rma_5HT_overall_p,  "5HT",category_labels,category_headers,'overall_p')
+}
+
+rma_simple_forest(unique(datAll_orig_w$Category),rma_5HT_av_pav_w,"5HT",category_labels,category_headers, 'aversive pavl w')
+
+
+rma_simple_forest(unique(datAll_mb_w_DA$Category),rma_DA_mb_w,"DA",category_labels,category_headers, 'mb w')
+rma_simple_forest(unique(datAll_risk_w_DA$Category),rma_DA_risk_w,"DA",category_labels,category_headers, 'risk w')
+
+
+
+```
+
+```{r publication_bias, heterogeneity}
+
+# print heterogeneity for each category (you can get heterogeneity for overall by printing that variable)
+# Define a list of the datasets with corresponding neuromodulator labels
+datasets <- list(HT5 = rma_5HT, DA = rma_DA)
+
+# Loop through each dataset and category, printing the results with the neuromodulator label
+lapply(names(datasets), function(neuromodulator) {
+  data <- datasets[[neuromodulator]]
+  lapply(names(data), function(category) {
+    print(paste("Neuromodulator:", neuromodulator, "Category:", category))
+    print(data[[category]])
+  })
+})
+
+# check how many studies in each category 
+lapply(names(datasets), function(neuromodulator) {
+  data <- datasets[[neuromodulator]]
+  lapply(setNames(names(data), names(data)), function(category) {
+    print(paste("Neuromodulator:", neuromodulator, "category_N:",  data[[category]]$k))
+  })
+})
+
+
+#Egger's Test for funnel plot asymmetry
+lapply(setNames(names(rma_DA), names(rma_DA)), function(category) {
+  regtest(rma_DA[[category]])
+})
+
+lapply(setNames(names(rma_5HT), names(rma_5HT)), function(category) {
+  regtest(rma_5HT[[category]])
+})
+
+regtest(rma_DA_overall_r)
+regtest(rma_DA_overall_p)
+regtest(rma_5HT_overall_r)
+regtest(rma_5HT_overall_p)
+
+## FIGURES: Funnel plots 
+funnel_plots_fun <- function(category,
+                             rma_list,
+                             neuromodulator
+) {
+  # Specify the file to save the plots
+  pdf(paste0("./results/funnel_plots/funnel_", neuromodulator, "_",
+             gsub(" ", "_", tolower(category))
+             , "_.pdf"))
+  
+  if (category == "overall_r") {
+    rma_obj <- rma_list
+    cat_name <- 'Overall reward function'
+  } else if (category == "overall_p"){
+    rma_obj <- rma_list
+    cat_name <- 'Overall punishment function'
+  } else {
+    rma_obj <- rma_list[[category]]
+    cat_name <- category
+  }
+  
+  # Loop through each category to create and save the funnel plot
+  funnel(rma_obj,
+         xlab = "Effect Size (Cohen's d)",
+         level = c(90, 95, 99),
+         shade = c("white", "gray", "darkgray"),
+         refline = 0,
+         legend = TRUE,
+         main = cat_name # Use the category name as the title
+  )
+  
+  # Close the PDF device
+  dev.off()
+}
+
+lapply(unique(dat5HT_final_cat$Category),
+       funnel_plots_fun,
+       rma_5HT,
+       "5-HT")
+
+lapply(unique(datDA_final_cat$Category),
+       funnel_plots_fun,
+       rma_DA,
+       "DA")
+
+funnel_plots_fun("overall_r", rma_DA_overall_r, "DA")
+funnel_plots_fun("overall_p", rma_DA_overall_p, "DA")
+
+funnel_plots_fun("overall_r", rma_5HT_overall_r, "5HT")
+funnel_plots_fun("overall_p", rma_5HT_overall_p, "5HT")
+```
+
+```{r outliers, echo=TRUE, message=FALSE, warning=FALSE}
+
+rma_objects <- list(rma_DA_overall_r, rma_5HT_overall_r, rma_5HT_overall_p, rma_DA$`reward learning sensitivity`, rma_DA$`punishment learning sensitivity`, rma_DA$`risk attitude`, rma_DA$`model-based`, rma_DA$`aversive pavlovian`, rma_DA$`appetitive pavlovian`, rma_5HT$`model-based`, rma_5HT$`risk attitude`, rma_5HT$`reward learning sensitivity`, rma_5HT$`aversive pavlovian`)
+
+outlier_results <- lapply(rma_objects, find.outliers)
+
+names(outlier_results) <- c("DA_overall_r", "5HT_overall_r", "rma_5HT_overall_p", "DA_rew", "DA_pun", "DA_risk","DA_mb", "DA_av_pav", "DA_ap_pav", "5HT_mb", "5HT_risk", "5HT_rew", "5HT_av_pav")
+
+outlier_results
+
+inf_results <- lapply(rma_objects, influence)
+inf_results
+
+
+## SUPPLEMENTARY FIGURE: 5HT overall punishment and DA risk attitude: influential study plots (Leave-One-Out Meta-Analysis Results)
+data_list <- list(
+  dat_se_5HT = dat5HT_final_overall_p %>% mutate(dse = sqrt(vard)),
+  dat_se_DA = datDA_final_cat %>% mutate(dse = sqrt(vard)) %>% filter(Category == 'risk attitude')
+)
+
+# Create metagen models
+meta_list <- lapply(data_list, function(data) {
+  metagen(TE = d, seTE = dse, studlab = AuthorY, data = data, sm = "SMD", fixed = FALSE, random = TRUE, method.tau = "REML")
+})
+
+# Perform influence analysis, plot, and save each plot as a PDF
+inf_analysis <- lapply(names(meta_list), function(name) {
+  model <- meta_list[[name]]
+  analysis <- InfluenceAnalysis(x = model, random = TRUE)
+  
+  # Save each plot as a PDF
+  pdf(file = paste0("./results/suppl/", name, "_influence_plot.pdf"))
+  plot(analysis, "i2")
+  dev.off()
+  
+  return(analysis)
+})
+
+# Name the results for clarity
+names(inf_analysis) <- c("5HT: Overall punishment processing", "DA: Risk attitude")
+
+# plot(inf.analysis, "es")
+
+
+```
+
+```{r moderator/subgroup analyses: check categories N}
+# List of data frames with names
+dataframes <- list(dat5HT_cat = dat5HT_final_cat, datDA_cat = datDA_final_cat, datDA_final_overall_r = datDA_final_overall_r, datDA_final_overall_p = datDA_final_overall_p, dat5HT_final_overall_r = dat5HT_final_overall_r, dat5HT_final_overall_p = dat5HT_final_overall_p)
+
+# Function to count by a specific variable and conditionally include 'Category' based on dataframe name
+count_by_variable <- function(df, variable, df_name) {
+  if (str_ends(df_name, "cat")) {
+    # Group by 'Category' if the dataframe name ends with 'cat'
+    df %>%
+      group_by(Category, {{ variable }}) %>%
+      summarise(count = n(), .groups = 'drop')
+  } else {
+    # Group only by the variable if the dataframe name does not end with 'cat'
+    df %>%
+      group_by({{ variable }}) %>%
+      summarise(count = n(), .groups = 'drop')
+  }
+}
+
+# Apply the function for 'drug_activity' to each dataframe
+drug_activity_counts <- mapply(count_by_variable, dataframes, names(dataframes), MoreArgs = list(variable = sym("drug_activity")), SIMPLIFY = FALSE)
+
+# For simplified_drug_target
+simplified_drug_target_counts_2 <-  mapply(count_by_variable, dataframes, names(dataframes), MoreArgs = list(variable = sym("simplified_drug_target2")), SIMPLIFY = FALSE)
+
+drug_target_counts <-  mapply(count_by_variable, dataframes, names(dataframes), MoreArgs = list(variable = sym("drug_target")), SIMPLIFY = FALSE)
+
+# acute vs chronic drug treatment
+acute_counts <-  mapply(count_by_variable, dataframes, names(dataframes), MoreArgs = list(variable = sym("acute")), SIMPLIFY = FALSE)
+
+# task type
+task_name2 <-  mapply(count_by_variable, dataframes, names(dataframes), MoreArgs = list(variable = sym("task_name2")), SIMPLIFY = FALSE)
+
+for (x in dataframes) {
+  print(paste0('min age_total',min(x$age_total, na.rm = TRUE)))
+  print(paste0('max age_total',max(x$age_total, na.rm = TRUE)))
+  
+  print(paste0('min female_total', min(x$female_total, na.rm = TRUE)))
+  print(paste0('max female_total', max(x$female_total, na.rm = TRUE)))
+}
+
+```
+
+``` {r supplementary table: study counts for each moderator}
+
+# Define the dataframes
+dataframes <- list(
+  dat5HT_cat = dat5HT_final_cat,
+  datDA_cat = datDA_final_cat,
+  datDA_final_overall_r = datDA_final_overall_r,
+  datDA_final_overall_p = datDA_final_overall_p,
+  dat5HT_final_overall_r = dat5HT_final_overall_r,
+  dat5HT_final_overall_p = dat5HT_final_overall_p
+)
+
+# Function to calculate counts for subcategories
+summarize_subcategories <- function(df, group_col) {
+  df %>%
+    group_by(!!sym(group_col)) %>%
+    summarise(count = n()) %>%
+    mutate(result = paste0(!!sym(group_col), "=", count)) %>%
+    summarise(result = paste(result, collapse = ", ")) %>%
+    pull(result)
+}
+
+# General function to process tables
+create_summary_table <- function(categories, include_task_name = FALSE, include_simplified_target = FALSE) {
+  summary_table <- lapply(names(categories), function(category_name) {
+    df <- categories[[category_name]]
+    
+    tibble(
+      drug_activity = summarize_subcategories(df, "drug_activity"),
+      simplified_drug_target2 = if (include_simplified_target) {
+        summarize_subcategories(df, "simplified_drug_target2")
+      } else {
+        NA
+      },
+      task_name2 = if (include_task_name && category_name %in% c("reward_learning", "punishment_learning", "model_based_learning")) {
+        summarize_subcategories(df, "task_name2")
+      } else {
+        NA
+      },
+      acute = summarize_subcategories(df, "acute"),
+      total_age = paste0("N=", sum(!is.na(df$age_total))),
+      total_female = paste0("N=", sum(!is.na(df$female_total))) # Count non-NaN rows for female_total
+    )
+  })
+  
+  bind_cols(
+    Category = names(categories),
+    bind_rows(summary_table)
+  ) %>%
+    pivot_longer(
+      cols = -Category,
+      names_to = "Metric",
+      values_to = "Value"
+    ) %>%
+    pivot_wider(
+      names_from = Category,
+      values_from = Value
+    )
+}
+
+# Dopamine categories
+dopamine_categories <- list(
+  "overall_reward" = dataframes$datDA_final_overall_r,
+  "overall_punishment" = dataframes$datDA_final_overall_p,
+  "reward_learning" = dataframes$datDA_cat %>% filter(Category == "reward learning sensitivity"),
+  "punishment_learning" = dataframes$datDA_cat %>% filter(Category == "punishment learning sensitivity")
+)
+
+# Serotonin categories
+serotonin_categories <- list(
+  "overall_reward" = dataframes$dat5HT_final_overall_r,
+  "overall_punishment" = dataframes$dat5HT_final_overall_p,
+  "model_based_learning" = dataframes$dat5HT_cat %>% filter(Category == "model-based")
+)
+
+# Generate tables
+dopamine_table <- create_summary_table(dopamine_categories, include_task_name = TRUE, include_simplified_target = TRUE)
+serotonin_table <- create_summary_table(serotonin_categories, include_task_name = TRUE, include_simplified_target = FALSE)
+
+# View tables (optional: print as LaTeX or other formats)
+dopamine_table %>%
+  kable(format = "latex", booktabs = TRUE, caption = "Dopamine Summary Table") %>%
+  kable_styling(latex_options = c("hold_position"))
+
+serotonin_table %>%
+  kable(format = "latex", booktabs = TRUE, caption = "Serotonin Summary Table") %>%
+  kable_styling(latex_options = c("hold_position"))
+
+latex_table_DA <- xtable(dopamine_table)
+latex_table_5HT <- xtable(serotonin_table)
+
+# print(latex_table_DA, type = "latex")
+# print(latex_table_5HT, type = "latex")
+
+
+
+```
+
+```{r moderator/subgroup analysis: run analyses}
+## STEP 1: Is there a significant influence of the moderator? Testing the significant difference between subgroups
+
+# List of moderators you want to analyze
+moderators <- c("drug_activity", "simplified_drug_target2", "task_name2", "age_total", "female_total", "acute")
+
+# List of overall datasets
+overall_dataframes <- list(mod_DA_overall_r = datDA_final_overall_r, mod_DA_overall_p = datDA_final_overall_p, mod_5HT_overall_r = dat5HT_final_overall_r, mod_5HT_overall_p = dat5HT_final_overall_p)
+
+# List of filtered datasets and their corresponding filters
+filtered_dataframes <- list(
+  mod_DA_rew = datDA_final_cat %>% filter(Category == 'reward learning sensitivity'),
+  mod_DA_pun = datDA_final_cat %>% filter(Category == 'punishment learning sensitivity'),
+  mod_DA_disc = datDA_final_cat %>% filter(Category == 'reward discounting'),
+  mod_5HT_modelbased = dat5HT_final_cat %>% filter(Category == 'model-based'),
+  mod_5HT_rew = dat5HT_final_cat %>% filter(Category == 'reward learning sensitivity')
+)
+
+# Function to run the models for a given moderator
+run_models <- function(moderator, dataframes) {
+  map(dataframes, ~ rma(d, vard, mods = as.formula(paste("~", moderator)), data = .x))
+}
+
+# Run the models for each moderator and store results in a list
+all_model_results <- lapply(moderators, function(moderator) {
+  # Apply conditional logic based on the moderator
+  if (moderator == "simplified_drug_target2") {
+    # Only use specific datasets when the moderator is simplified_drug_target2
+    selected_overall_dataframes <- overall_dataframes[c("mod_DA_overall_r", "mod_DA_overall_p")]
+    selected_filtered_dataframes <- filtered_dataframes[c("mod_DA_rew", "mod_DA_pun")]
+    # Run models for selected overall and filtered datasets
+    overall_models <- run_models(moderator, selected_overall_dataframes)
+    filtered_models <- run_models(moderator, selected_filtered_dataframes)
+    # Combine the models into one list
+    all_models <- c(overall_models, filtered_models)
+    
+  } else if (moderator == "task_name2") {
+    selected_filtered_dataframes <- filtered_dataframes[c("mod_DA_rew", "mod_DA_pun","mod_5HT_modelbased", "mod_DA_disc" )]
+    # Run models for filtered datasets
+    filtered_models <- run_models(moderator, selected_filtered_dataframes)
+    all_models <- filtered_models
+    
+  } else if (moderator == "acute") {
+    selected_overall_dataframes <- overall_dataframes[c("mod_DA_overall_r", "mod_5HT_overall_r", "mod_5HT_overall_p")]
+    selected_filtered_dataframes <- filtered_dataframes[c("mod_5HT_rew" )]
+    overall_models <- run_models(moderator, selected_overall_dataframes)
+    filtered_models <- run_models(moderator, selected_filtered_dataframes)
+    all_models <- c(overall_models, filtered_models)
+  } else {
+    # Use all datasets for other moderators
+    selected_overall_dataframes <- overall_dataframes
+    selected_filtered_dataframes <- filtered_dataframes
+    # Run models for selected overall and filtered datasets
+    overall_models <- run_models(moderator, selected_overall_dataframes)
+    filtered_models <- run_models(moderator, selected_filtered_dataframes)
+    all_models <- c(overall_models, filtered_models) # Combine the models into one list
+  }
+  
+  # Print results for each model in the list
+  for (name in names(all_models)) {
+    cat(paste("Moderator:", moderator, "- Model:", name, "\n"))
+    print(all_models[[name]])
+    cat("\n")
+  }
+  
+  return(all_models)
+})
+
+# Combine results of all models into a named list 
+names(all_model_results) <- moderators
+
+
+## STEP 2: What is driving the significant moderator analysis? Provides significance of each subgroup
+# re-specify the model with an intercept and dummy to see where the difference is (which group is larger/smaller)
+DA_pun_lr <- rma(d, vard, mods = ~ task_name2, data = datDA_final_cat %>% filter(Category == 'punishment learning sensitivity'))
+DA_pun_lr_dir <- rma(d, vard, mods = ~ task_name2-1, data = datDA_final_cat %>% filter(Category == 'punishment learning sensitivity'))
+
+# 5HT: drug type: overall reward (3; agonist=7, antagonist=13), model-based (7; agonist=4, antagonist=6)
+HT5_rew_o <- rma(d, vard, mods = ~ drug_activity, data = dat5HT_final_overall_r) # %>% filter(!Author == 'Luo'))
+HT5_rew_o_dir <- rma(d, vard, mods = ~ drug_activity-1, data = dat5HT_final_overall_r) # %>% filter(!Author == 'Luo'))
+
+HT5_mb <- rma(d, vard, mods = ~ drug_activity, data = dat5HT_final_cat %>% filter(Category == 'model-based'))
+HT5_mb_dir <- rma(d, vard, mods = ~ drug_activity-1, data = dat5HT_final_cat %>% filter(Category == 'model-based'))
+
+DA_disc <- rma(d, vard, mods = ~ task_name2, data = datDA_final_cat %>% filter(Category == 'reward discounting'))
+DA_disc_dir <- rma(d, vard, mods = ~ task_name2-1, data = datDA_final_cat %>% filter(Category == 'reward discounting'))
+
+
+######## SUPPLEMENTARY FIGURE: BUBBLE PLOT of proportion female x DA overall punishment ###############
+pdf(paste0("./results/suppl/bubble_DA_p_female_mod.pdf")) # Specify the file to save the plots
+dat_filtered <- datDA_final_overall_p[!is.na(datDA_final_overall_p$female_total), ] # Remove rows with NA values in 'female_total'
+DA_female_total <- rma(d, vard, mods = ~ female_total, data = dat_filtered)
+regplot(DA_female_total, mod = "female_total",xlim=c(-0, 0.9), xlab = 'Proportion of female participants in study samples', ylab = "Cohen's d",lcol= '#5e9390', shade=FALSE, bg= '#e8959a')
+text(x = dat_filtered$female_total,
+     y = DA_female_total$yi.f,
+     labels = dat_filtered$AuthorY,
+     pos = 4, cex = 0.8, font = 2)
+dev.off()
+
+```
+
+```{r supplementary table/fig: risk of bias}
+
+########### DOPAMINE #############
+
+datAll_mb_w_DA_rob <- datAll_mb_w_DA %>% mutate(Category = recode(Category,
+                           "model-based" = "MB-w"))
+datAll_risk_w_DA_rob <- datAll_risk_w_DA %>% mutate(Category = recode(Category,
+                           "risk attitude" = "RA-w"))
+
+datDA_rob <- bind_rows(
+  datDA %>% select(AuthorY, Category, 
+         Random.sequence.generation, 
+         Allocation.concealment, 
+         Blinding.of.participants.and.experimenters, 
+         Blinding.of.outcome.assessment, 
+         Incomplete.outcome.data), 
+  datAll_mb_w_DA_rob %>% filter(Include_final == "N need data incl w") %>% select(AuthorY, Category, 
+         Random.sequence.generation, 
+         Allocation.concealment, 
+         Blinding.of.participants.and.experimenters, 
+         Blinding.of.outcome.assessment, 
+         Incomplete.outcome.data),
+  datAll_risk_w_DA_rob %>% filter(Include_final == "N need data incl w") %>% select(AuthorY, Category, 
+         Random.sequence.generation, 
+         Allocation.concealment, 
+         Blinding.of.participants.and.experimenters, 
+         Blinding.of.outcome.assessment, 
+         Incomplete.outcome.data))
+
+datDA_tbl <- datDA_rob %>%
+  filter(!Category %in% c("reward sensitivity", "punishment sensitivity")) %>%
+  rename_with(~ gsub("\\.", " ", .)) %>% # Replace full stops with spaces in column names
+  arrange(AuthorY) %>%
+  mutate(Category = recode(Category,
+                           "reward learning sensitivity" = "R L/S",
+                           "punishment learning sensitivity" = "P L/S",
+                           "reward vigour" = "RV", 
+                           "reward discounting" = "RD", 
+                           "appetitive pavlovian" = "P+" ,
+                           "aversive pavlovian" = "P-", 
+                           "model-based" = "MB", 
+                           "risk attitude" = "RA")) 
+
+
+# Add Category2 with all categories for each AuthorY
+datDA_tbl_with_category2 <- datDA_tbl %>%
+  group_by(AuthorY) %>%
+  mutate(Category2 = paste(unique(Category), collapse = ", ")) %>% 
+  select(!Category) %>%  
+  distinct(AuthorY, .keep_all = TRUE) %>% # Keep only unique AuthorY rows
+  ungroup()
+
+
+# Transform data to long format
+datDA_long <- datDA_tbl_with_category2 %>%
+  pivot_longer(
+    cols = -c(AuthorY, Category2),
+    names_to = "Risk_of_Bias",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Risk_of_Bias = factor(Risk_of_Bias, levels = c( # Specify custom order
+      "Random sequence generation",
+      "Allocation concealment",
+      "Blinding of participants and experimenters",
+      "Blinding of outcome assessment",
+      "Incomplete outcome data"
+    )), 
+    AuthorY = factor(AuthorY, levels = rev(unique(AuthorY))),
+    Value = recode(Value,
+                   "L" = "Low",
+                   "H" = "High", 
+                   "?" = "Unsure"
+    ),
+    Value = factor(Value, levels = c("Low", "Unsure", "High")))
+
+
+# Create a heatmap plot
+plot <- ggplot(datDA_long, aes(x = Risk_of_Bias, y = AuthorY, fill = Value)) +
+  geom_tile(color = "black", size = 0.5) +
+  scale_fill_manual(
+    values = c("Low" = "green", "Unsure" = "yellow", "High" = "red"),
+    name = "Risk of Bias"
+  ) +
+  labs(x = "Criteria", y = "", title = "") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    plot.margin = margin(t = 40, r = 150, b = 10, l = 10) # Add space for headers
+  ) +
+  # Add Category2 text
+  geom_text(
+    data = datDA_tbl_with_category2,
+    aes(
+      label = Category2,
+      x = max(as.numeric(as.factor(datDA_long$Risk_of_Bias))) + 0.6, # Position to the right
+      y = AuthorY
+    ),
+    inherit.aes = FALSE,
+    hjust = 0,
+    size = 3
+  ) +
+  # Add headers for Author and Subcomponent
+  annotate("text", x = 0, y = length(unique(datDA_long$AuthorY)) + 1.5, label = "Study", size = 3.5, fontface = "bold", hjust = 1.1) +
+  annotate("text", x = max(as.numeric(as.factor(datDA_long$Risk_of_Bias))) + 1.2, y = length(unique(datDA_long$AuthorY)) + 1.5, label = "Subcomponent", size = 3.5, fontface = "bold", hjust = 0.4) +
+  coord_cartesian(clip = "off") # Prevent clipping of text labels
+
+# Display the plot
+print(plot)
+
+# Save the plot as PDF
+ggsave("./results/suppl/RoB_DA.pdf", plot = plot, width = 8, height = 15)
+
+
+########### SEROTONIN #############
+
+datAll_orig_w_rob <- datAll_mb_w_DA %>% mutate(Category = recode(Category,
+                           "aversive pavlovian" = "P- -w"))
+
+dat5HT_rob <- bind_rows(
+  dat5HT %>% select(AuthorY, Category, 
+         Random.sequence.generation, 
+         Allocation.concealment, 
+         Blinding.of.participants.and.experimenters, 
+         Blinding.of.outcome.assessment, 
+         Incomplete.outcome.data), 
+  datAll_orig_w_rob %>% filter(Include_final == "N need data incl w") %>% select(AuthorY, Category, 
+         Random.sequence.generation, 
+         Allocation.concealment, 
+         Blinding.of.participants.and.experimenters, 
+         Blinding.of.outcome.assessment, 
+         Incomplete.outcome.data))
+
+#############################
+dat5HT_tbl <- dat5HT_rob %>%
+  filter(!Category %in% c("reward sensitivity", "punishment sensitivity")) %>%
+  rename_with(~ gsub("\\.", " ", .)) %>% # Replace full stops with spaces in column names
+  arrange(AuthorY) %>%
+  mutate(Category = recode(Category,
+                           "reward learning sensitivity" = "R L/S",
+                           "punishment learning sensitivity" = "P L/S",
+                           "reward vigour" = "RV", 
+                           "reward discounting" = "RD", 
+                           "appetitive pavlovian" = "P+" ,
+                           "aversive pavlovian" = "P-", 
+                           "model-based" = "MB", 
+                           "risk attitude" = "RA")) 
+
+
+# Add Category2 with all categories for each AuthorY
+dat5HT_tbl_with_category2 <- dat5HT_tbl %>%
+  group_by(AuthorY) %>%
+  mutate(Category2 = paste(unique(Category), collapse = ", ")) %>% 
+  select(!Category) %>%  
+  distinct(AuthorY, .keep_all = TRUE) %>% # Keep only unique AuthorY rows
+  ungroup()
+
+
+# Transform data to long format
+dat5HT_long <- dat5HT_tbl_with_category2 %>%
+  pivot_longer(
+    cols = -c(AuthorY, Category2),
+    names_to = "Risk_of_Bias",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Risk_of_Bias = factor(Risk_of_Bias, levels = c( # Specify custom order
+      "Random sequence generation",
+      "Allocation concealment",
+      "Blinding of participants and experimenters",
+      "Blinding of outcome assessment",
+      "Incomplete outcome data"
+    )), 
+    AuthorY = factor(AuthorY, levels = rev(unique(AuthorY))),
+    Value = recode(Value,
+                   "L" = "Low",
+                   "H" = "High", 
+                   "?" = "Unsure"
+    ),
+    Value = factor(Value, levels = c("Low", "Unsure", "High")))
+
+
+# Create a heatmap plot
+plot <- ggplot(dat5HT_long, aes(x = Risk_of_Bias, y = AuthorY, fill = Value)) +
+  geom_tile(color = "black", size = 0.5) +
+  scale_fill_manual(
+    values = c("Low" = "green", "Unsure" = "yellow", "High" = "red"),
+    name = "Risk of Bias"
+  ) +
+  labs(x = "Criteria", y = "", title = "") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    plot.margin = margin(t = 40, r = 150, b = 10, l = 10) # Add space for headers
+  ) +
+  # Add Category2 text
+  geom_text(
+    data = dat5HT_tbl_with_category2,
+    aes(
+      label = Category2,
+      x = max(as.numeric(as.factor(dat5HT_long$Risk_of_Bias))) + 0.6, # Position to the right
+      y = AuthorY
+    ),
+    inherit.aes = FALSE,
+    hjust = 0,
+    size = 3
+  ) +
+  # Add headers for Author and Subcomponent
+  annotate("text", x = 0, y = length(unique(dat5HT_long$AuthorY)) + 1.5, label = "Study", size = 3.5, fontface = "bold", hjust = 1.1) +
+  annotate("text", x = max(as.numeric(as.factor(dat5HT_long$Risk_of_Bias))) + 1.2, y = length(unique(dat5HT_long$AuthorY)) + 1.5, label = "Subcomponent", size = 3.5, fontface = "bold", hjust = 0.4) +
+  coord_cartesian(clip = "off") # Prevent clipping of text labels
+
+# Display the plot
+print(plot)
+
+# Save the plot as PDF
+ggsave("./results/suppl/RoB_5HT.pdf", plot = plot, width = 8, height = 15)
+```
+
+```{r supplementary DA correlation figure: learning rate vs sensitivity}
+
+datDA_comp <- datDA %>%
+  filter(secondary_category %in% c("reward learning", "reward sensitivity")) %>%
+  group_by(AuthorY) %>%
+  filter(all(c("reward learning", "reward sensitivity") %in% secondary_category)) %>%
+  ungroup()
+
+wide_data <- datDA_comp %>%
+  mutate(secondary_category = str_replace_all(secondary_category, " ", "_")) %>%
+  select(AuthorY, secondary_category, d, vard) %>%
+  pivot_wider(names_from = secondary_category, values_from = c(d, vard), names_sep = "_")
+
+
+# Calculate 95% CIs
+wide_data <- wide_data %>%
+  mutate(
+    se_reward_sensitivity = sqrt(vard_reward_sensitivity),  # Standard Error
+    x_min_sens = d_reward_sensitivity - (1.96 * se_reward_sensitivity),  # Lower 95% CI
+    x_max_sens = d_reward_sensitivity + (1.96 * se_reward_sensitivity),   # Upper 95% CI
+    se_reward_learning = sqrt(vard_reward_learning),
+    x_min_lr = d_reward_learning - (1.96 * se_reward_learning),  # Lower 95% CI
+    x_max_lr = d_reward_learning + (1.96 * se_reward_learning),   # Upper 95% CI
+  )
+
+# Calculate dynamic limits
+x_range <- range(c(wide_data$x_min_sens, wide_data$x_max_sens), na.rm = TRUE)
+y_range <- range(c(wide_data$x_min_lr, wide_data$x_max_lr), na.rm = TRUE)
+
+pdf(paste0("./results/suppl/DA_param_rew_plot.pdf"), width = 6,
+      height = 5) # Specify the file to save the plots
+
+# Create the plot
+ggplot(wide_data, aes(x = d_reward_sensitivity, y = d_reward_learning)) +
+  geom_errorbarh(aes(xmin = x_min_sens, xmax = x_max_sens), height = 0.05, color = "#55AD9B") +  # Horizontal error bars
+  geom_errorbar(aes(ymin = x_min_lr, ymax = x_max_lr), width = 0.05, color = "#55AD9B") +  # Vertical error bars
+  geom_point(color = "#55AD9B", size = 5) +
+  geom_text(aes(label = AuthorY), hjust = -0.04, vjust = 1.9, size = 3) +  # Add AuthorY labels above points
+  labs(
+    x = "Reward Sensitivity",
+    y = "Reward Learning Rate"
+  ) +
+  coord_cartesian(xlim = x_range, ylim = y_range) +  # Set axis limits dynamically
+  theme_classic()
+
+dev.off()
+
+```
+
+```{r supplementary table: study characteristics}
+
+# add within-subject studies
+datDA$acute <- as.integer(datDA$acute)
+
+datDA_all <- bind_rows(
+  datDA  %>% select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as,task, task_name, task_name2,outcome_name, measure,age_total, female_total, acute, secondary_category, drug_activity, simplified_drug_target2), 
+  datAll_mb_w_DA %>% filter(Include_final == "N need data incl w") %>% select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as,task, task_name, task_name2,outcome_name, measure,age_total, female_total, acute, secondary_category, drug_activity, simplified_drug_target2),
+  datAll_risk_w_DA %>% filter(Include_final == "N need data incl w") %>% select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as,task, task_name, task_name2,outcome_name, measure,age_total, female_total, acute, secondary_category, drug_activity, simplified_drug_target2)
+) 
+
+# indicate which studies were reverse coded with an asterisk
+# indicate which studies were treated as bw when originally w studies with a cross
+datDA_tbl <- datDA_all %>%
+  select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as, task_name,outcome_name,age_total, female_total, acute) %>%
+  mutate(
+    Category = case_when(
+      Category == "punishment learning sensitivity" ~ "P L/S",
+      Category == "punishment sensitivity" ~ "P S",
+      Category == "punishment learning" ~ "P L",
+      Category == "reward learning sensitivity" ~ "R L/S",
+      Category == "reward sensitivity" ~ "R S",
+      Category == "reward learning" ~ "R L",
+      Category == "appetitive pavlovian" ~ "P+",
+      Category == "aversive pavlovian" ~ "P-",
+      Category == "reward discounting" ~ "RD",
+      Category == "reward vigour" ~ "RV",
+      Category == "model-based" ~ "MB/F",
+      Category == "risk attitude" ~ "RA",
+      TRUE ~ Category # Keep original value for unmatched cases
+    ),
+    # Set category order using factor
+    Category = factor(Category, levels = c(
+      "R L/S", "R S", "R L",
+      "P L/S", "P L", "P S",
+      "P+", "P-",
+      "RD", "RV",
+      "MB/F", "RA"
+    )),
+    design_true = ifelse(design_true == 'w' & treat_as == 'bw',
+                         paste0('w', '$^\\dagger$'), # Add a dagger as a superscript
+                         design_true),
+    AuthorY = ifelse(AuthorY %in% reverse_coded_studies, paste0(AuthorY, '*'), AuthorY),
+    female_total = round(as.numeric(female_total), 2),
+    age_total = round(as.numeric(female_total), 2),
+  ) %>%
+  rename(
+    Study = AuthorY,
+    `Drug, Dose` = drug_dose,
+    `N placebo` = N_placebo,
+    `N drug` = N_drug,
+    `Study design` = design_true
+  ) %>%
+  mutate(across(c(age_total, female_total, acute), ~ ifelse(is.na(.), "NA", .))) %>% # Replace NA with "NA" in specific columns
+  arrange(Category, Study)
+
+# Create the LaTeX table
+DA_latex_table <- xtable(datDA_tbl)
+print(
+  xtable(datDA_tbl),
+  include.rownames = FALSE,
+  sanitize.text.function = identity
+)
+
+######################### SEROTONIN ##############
+datAll_orig_w$age_total <- as.numeric(datAll_orig_w$age_total)
+dat5HT$acute <- as.integer(dat5HT$acute)
+
+dat5HT_all <- bind_rows(
+  dat5HT %>%
+    select(
+      AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as, task,
+      task_name, task_name2, outcome_name, measure,
+      age_total,
+      female_total, acute, secondary_category, drug_activity, simplified_drug_target2
+    ),
+  datAll_orig_w %>%
+    filter(Include_final == "N need data incl w") %>%
+    select(
+      AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as, task,
+      task_name, task_name2, outcome_name, measure,
+      age_total,
+      female_total, acute, secondary_category, drug_activity, simplified_drug_target2
+    )
+)
+
+dat5HT_tbl <- dat5HT_all %>%
+  select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as, task_name,outcome_name,age_total, female_total, acute) %>%
+  mutate(
+    Category = case_when(
+      Category == "punishment learning sensitivity" ~ "P L/S",
+      Category == "punishment sensitivity" ~ "P S",
+      Category == "punishment learning" ~ "P L",
+      Category == "reward learning sensitivity" ~ "R L/S",
+      Category == "reward sensitivity" ~ "R S",
+      Category == "reward learning" ~ "R L",
+      Category == "appetitive pavlovian" ~ "P+",
+      Category == "aversive pavlovian" ~ "P-",
+      Category == "reward discounting" ~ "RD",
+      Category == "reward vigour" ~ "RV",
+      Category == "model-based" ~ "MB/F",
+      Category == "risk attitude" ~ "RA",
+      TRUE ~ Category # Keep original value for unmatched cases
+    ),
+    # Set category order using factor
+    Category = factor(Category, levels = c(
+      "R L/S", "R S", "R L",
+      "P L/S", "P L", "P S",
+      "P+", "P-",
+      "RD", "RV",
+      "MB/F", "RA"
+    )),
+    design_true = ifelse(design_true == 'w' & treat_as == 'bw',
+                         paste0('w', '$^\\dagger$'), # Add a dagger as a superscript
+                         design_true),
+    female_total = round(as.numeric(female_total), 2),
+    age_total = round(as.numeric(female_total), 2)
+  ) %>%
+  rename(
+    Study = AuthorY,
+    `Drug, Dose` = drug_dose,
+    `N placebo` = N_placebo,
+    `N drug` = N_drug,
+    `Study design` = design_true
+  ) %>%
+  mutate(across(c(age_total, female_total, acute), ~ ifelse(is.na(.), "NA", .))) %>% # Replace NA with "NA" in specific columns
+  arrange(Category, Study)
+
+# Create the LaTeX table
+latex_table_5HT <- xtable(dat5HT_tbl)
+print(
+  xtable(latex_table_5HT),
+  include.rownames = FALSE,
+  sanitize.text.function = identity
+)
+
+
+```
+
+
