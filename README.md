@@ -15,7 +15,6 @@ Then open your web browser (preferably Chrome) and navigate to
 `http://0.0.0.0:8787/`. The username is `rstudio`, and the password is `meta`.
 
 ## Files in this repository
-These are the actively maintained files in this repository:
 
 ```
 .
