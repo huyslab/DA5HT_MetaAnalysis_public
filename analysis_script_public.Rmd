@@ -474,8 +474,8 @@ datDA_filter <- datDA %>% filter(secondary_category!= "", secondary_category!= "
 # overall DA effects 
 dat5HT_final_overall_r <- dat5HT_final_cat %>% filter(Category != 'risk attitude', Category != 'model-based', Category != 'aversive pavlovian', Category != 'punishment learning sensitivity') %>% mutate(d = ifelse (Category == 'reward discounting', d * -1, d))
 
-# overall DA effects - remove duplicate participant studies: Weber, 2016; Westbrook 2024;
-datDA_final_overall_r <- datDA_final_cat %>% filter(Category != 'risk attitude', Category != 'model-based', Category != 'aversive pavlovian', Category != 'punishment learning sensitivity', !(AuthorY == 'Weber, 2016' & task_name == 'DD'), !(AuthorY == 'Westbrook, 2024' & task_name == 'PILT WM')) %>% mutate(d = ifelse (Category == 'reward discounting', d * -1, d))
+# overall DA effects - remove duplicate participant studies: Weber, 2016 PIT; Westbrook 2024 PILT - these have the smaller effect size compared with Weber, 2016 DD and Westbrook, 2020 cognitive effort - ie this is the more conservative approach. 
+datDA_final_overall_r <- datDA_final_cat %>% filter(Category != 'risk attitude', Category != 'model-based', Category != 'aversive pavlovian', Category != 'punishment learning sensitivity', !(AuthorY == 'Weber, 2016' & task_name == 'PIT'), !(AuthorY == 'Westbrook, 2024' & task_name == 'PILT WM')) %>% mutate(d = ifelse (Category == 'reward discounting', d * -1, d))
 
 if (suppl_rew_disc_aversive == "yes") {
   datDA_final_overall_p <- datDA_final_cat %>% filter(Category == 'aversive pavlovian' | Category == 'punishment learning sensitivity' | Category == 'reward discounting')
@@ -1112,7 +1112,7 @@ create_summary_table <- function(categories, include_task_name = FALSE, include_
       } else {
         NA
       },
-      task_name2 = if (include_task_name && category_name %in% c("reward_learning", "punishment_learning", "model_based_learning")) {
+      task_name2 = if (include_task_name && category_name %in% c("reward_learning", "punishment_learning", "model_based_learning", "reward discounting")) {
         summarize_subcategories(df, "task_name2")
       } else {
         NA
@@ -1143,7 +1143,8 @@ dopamine_categories <- list(
   "overall_reward" = dataframes$datDA_final_overall_r,
   "overall_punishment" = dataframes$datDA_final_overall_p,
   "reward_learning" = dataframes$datDA_cat %>% filter(Category == "reward learning sensitivity"),
-  "punishment_learning" = dataframes$datDA_cat %>% filter(Category == "punishment learning sensitivity")
+  "punishment_learning" = dataframes$datDA_cat %>% filter(Category == "punishment learning sensitivity"), 
+  "reward_discounting" = dataframes$datDA_cat %>% filter(Category == "reward discounting")
 )
 
 # Serotonin categories
@@ -1205,7 +1206,7 @@ all_model_results <- lapply(moderators, function(moderator) {
   if (moderator == "simplified_drug_target2") {
     # Only use specific datasets when the moderator is simplified_drug_target2
     selected_overall_dataframes <- overall_dataframes[c("mod_DA_overall_r", "mod_DA_overall_p")]
-    selected_filtered_dataframes <- filtered_dataframes[c("mod_DA_rew", "mod_DA_pun")]
+    selected_filtered_dataframes <- filtered_dataframes[c("mod_DA_rew", "mod_DA_pun", "mod_DA_disc")]
     # Run models for selected overall and filtered datasets
     overall_models <- run_models(moderator, selected_overall_dataframes)
     filtered_models <- run_models(moderator, selected_filtered_dataframes)
@@ -1263,6 +1264,8 @@ HT5_mb_dir <- rma(d, vard, mods = ~ drug_activity-1, data = dat5HT_final_cat %>%
 DA_disc <- rma(d, vard, mods = ~ task_name2, data = datDA_final_cat %>% filter(Category == 'reward discounting'))
 DA_disc_dir <- rma(d, vard, mods = ~ task_name2-1, data = datDA_final_cat %>% filter(Category == 'reward discounting'))
 
+DA_disc_drug <- rma(d, vard, mods = ~ drug_activity, data = datDA_final_cat %>% filter(Category == 'reward discounting'))
+DA_disc_drug_dir <- rma(d, vard, mods = ~ drug_activity-1, data = datDA_final_cat %>% filter(Category == 'reward discounting'))
 
 ######## SUPPLEMENTARY FIGURE: BUBBLE PLOT of proportion female x DA overall punishment ###############
 pdf(paste0("./results/suppl/bubble_DA_p_female_mod.pdf")) # Specify the file to save the plots
