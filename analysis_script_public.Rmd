@@ -29,11 +29,13 @@ library("xtable")
 library("kableExtra")
 library(gt)
 library(pagedown)
+library("openxlsx")
+
 
 # Parameters
 w_method <- "rm_toster_default" # Method for computing d for within participant designs. using the Cousineau and Goulet-Pelletier (2021) method in toster: https://cloud.r-project.org/web/packages/TOSTER/vignettes/SMD_calcs.html#fn7
 w_method_w <- "dz" # only for within-subject designs
-include_vigour_baselineRTnonsign <- 1 # 1 if including all vigour studies - including the studies with data only for high reward but baseline is not significant, otherwise 0
+include_vigour_baselineRTnonsign <- 1 # 1 (default) if including all vigour studies - including the studies with data only for high reward but baseline is not significant, otherwise 0
 drug_interpret <- 1 # 1 if want to conduct the meta-analysis based on drug interpretation (default). 0 if according to actual drug profile
 suppl_rew_disc_aversive <- 'no' # supplementary analysis condition. 'yes' = add reward discounting with the other aversive categories. default = 'no'
 
@@ -441,7 +443,7 @@ category_rma <- function(category, data, cat_type) {
       data = data,
       method = "REML",
       slab = AuthorY,
-      control = list(stepadj = 0.5, maxiter = 1000)
+      control = list(stepadj = 1, maxiter = 1000)
     )
   } else {
     if (cat_type == 'secondary') {
@@ -456,7 +458,7 @@ category_rma <- function(category, data, cat_type) {
       data = data_filtered,
       method = "REML",
       slab = AuthorY,
-      control = list(stepadj = 0.5, maxiter = 1000)
+      control = list(stepadj = 1, maxiter = 1000)
     )
   }
   
@@ -1555,18 +1557,18 @@ dev.off()
 ```{r supplementary table: study characteristics}
 
 # add within-subject studies
-datDA$acute <- as.integer(datDA$acute)
+# datDA$acute <- as.integer(datDA$acute)
 
 datDA_all <- bind_rows(
-  datDA  %>% select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as,task, task_name, task_name2,outcome_name, measure,age_total, female_total, acute, secondary_category, drug_activity, simplified_drug_target2), 
-  datAll_mb_w_DA %>% filter(Include_final == "N need data incl w") %>% select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as,task, task_name, task_name2,outcome_name, measure,age_total, female_total, acute, secondary_category, drug_activity, simplified_drug_target2),
-  datAll_risk_w_DA %>% filter(Include_final == "N need data incl w") %>% select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as,task, task_name, task_name2,outcome_name, measure,age_total, female_total, acute, secondary_category, drug_activity, simplified_drug_target2)
+  datDA  %>% select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as,task, task_name, task_name2,outcome_name, measure,age_total, female_total, single_or_multiple_drugAdministrations, secondary_category, drug_activity, simplified_drug_target2), 
+  datAll_mb_w_DA %>% filter(Include_final == "N need data incl w") %>% select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as,task, task_name, task_name2,outcome_name, measure,age_total, female_total, single_or_multiple_drugAdministrations, secondary_category, drug_activity, simplified_drug_target2),
+  datAll_risk_w_DA %>% filter(Include_final == "N need data incl w") %>% select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as,task, task_name, task_name2,outcome_name, measure,age_total, female_total, single_or_multiple_drugAdministrations, secondary_category, drug_activity, simplified_drug_target2)
 ) 
 
 # indicate which studies were reverse coded with an asterisk
 # indicate which studies were treated as bw when originally w studies with a cross
 datDA_tbl <- datDA_all %>%
-  select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as, task_name,outcome_name,age_total, female_total, acute) %>%
+  select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as, task_name,outcome_name,age_total, female_total, single_or_multiple_drugAdministrations) %>%
   mutate(
     Category = case_when(
       Category == "punishment learning sensitivity" ~ "P L/S",
@@ -1592,21 +1594,37 @@ datDA_tbl <- datDA_all %>%
       "MB/F", "RA"
     )),
     design_true = ifelse(design_true == 'w' & treat_as == 'bw',
-                         paste0('w', '$^\\dagger$'), # Add a dagger as a superscript
+                         paste0('w', '†'), # Add a dagger as a superscript
+                         # paste0('w', '$^\\dagger$'), # Add a dagger as a superscript
                          design_true),
     AuthorY = ifelse(AuthorY %in% reverse_coded_studies, paste0(AuthorY, '*'), AuthorY),
     female_total = round(as.numeric(female_total), 2),
-    age_total = round(as.numeric(female_total), 2),
+    age_total = round(as.numeric(age_total), 2),
   ) %>%
   rename(
     Study = AuthorY,
     `Drug, Dose` = drug_dose,
     `N placebo` = N_placebo,
     `N drug` = N_drug,
-    `Study design` = design_true
+    `Original design` = design_true,
+    `Final design` = treat_as,
+    Task = task_name,
+    Outcome = outcome_name,
+    `Study Age` = age_total,
+    `Study Female Proportion` = female_total,
+    `Drug regimen` = single_or_multiple_drugAdministrations
   ) %>%
-  mutate(across(c(age_total, female_total, acute), ~ ifelse(is.na(.), "NA", .))) %>% # Replace NA with "NA" in specific columns
+  mutate(across(c(`Study Age`, `Study Female Proportion`, `Drug regimen`), ~ ifelse(is.na(.), "NA", .))) %>%
+  # Replace NA with "NA" in specific columns
+  mutate(
+    `Drug regimen` = case_when(
+      `Drug regimen` == "single" ~ "1",  # If "single", replace with "1"
+      `Drug regimen` != "single" ~ ">1", # If not "single", replace with ">1"
+      TRUE ~ as.character(`Drug regimen`)  # Keep other values unchanged (if any)
+    )) %>%
   arrange(Category, Study)
+
+
 
 # Create the LaTeX table
 DA_latex_table <- xtable(datDA_tbl)
@@ -1616,9 +1634,12 @@ print(
   sanitize.text.function = identity
 )
 
+write.xlsx(datDA_tbl, "./results/dopamine_studies.xlsx")
+
+
 ######################### SEROTONIN ##############
 datAll_orig_w$age_total <- as.numeric(datAll_orig_w$age_total)
-dat5HT$acute <- as.integer(dat5HT$acute)
+# dat5HT$acute <- as.integer(dat5HT$acute)
 
 dat5HT_all <- bind_rows(
   dat5HT %>%
@@ -1626,7 +1647,7 @@ dat5HT_all <- bind_rows(
       AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as, task,
       task_name, task_name2, outcome_name, measure,
       age_total,
-      female_total, acute, secondary_category, drug_activity, simplified_drug_target2
+      female_total, single_or_multiple_drugAdministrations, secondary_category, drug_activity, simplified_drug_target2
     ),
   datAll_orig_w %>%
     filter(Include_final == "N need data incl w") %>%
@@ -1634,12 +1655,12 @@ dat5HT_all <- bind_rows(
       AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as, task,
       task_name, task_name2, outcome_name, measure,
       age_total,
-      female_total, acute, secondary_category, drug_activity, simplified_drug_target2
+      female_total, single_or_multiple_drugAdministrations, secondary_category, drug_activity, simplified_drug_target2
     )
 )
 
 dat5HT_tbl <- dat5HT_all %>%
-  select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as, task_name,outcome_name,age_total, female_total, acute) %>%
+  select(AuthorY, Category, drug_dose, N_drug, N_placebo, design_true, treat_as, task_name,outcome_name,age_total, female_total, single_or_multiple_drugAdministrations) %>%
   mutate(
     Category = case_when(
       Category == "punishment learning sensitivity" ~ "P L/S",
@@ -1665,19 +1686,32 @@ dat5HT_tbl <- dat5HT_all %>%
       "MB/F", "RA"
     )),
     design_true = ifelse(design_true == 'w' & treat_as == 'bw',
-                         paste0('w', '$^\\dagger$'), # Add a dagger as a superscript
+                         paste0('w', '†'), # Add a dagger as a superscript
+                         # paste0('w', '$^\\dagger$'), # Add a dagger as a superscript
                          design_true),
     female_total = round(as.numeric(female_total), 2),
-    age_total = round(as.numeric(female_total), 2)
+    age_total = round(as.numeric(age_total), 2)
   ) %>%
-  rename(
+ rename(
     Study = AuthorY,
     `Drug, Dose` = drug_dose,
     `N placebo` = N_placebo,
     `N drug` = N_drug,
-    `Study design` = design_true
-  ) %>%
-  mutate(across(c(age_total, female_total, acute), ~ ifelse(is.na(.), "NA", .))) %>% # Replace NA with "NA" in specific columns
+    `Original design` = design_true,
+    `Final design` = treat_as,
+    Task = task_name,
+    Outcome = outcome_name,
+    `Study Age` = age_total,
+    `Study Female Proportion` = female_total,
+    `Drug regimen` = single_or_multiple_drugAdministrations
+ ) %>%
+  mutate(across(c(`Study Age`, `Study Female Proportion`, `Drug regimen`), ~ ifelse(is.na(.), "NA", .))) %>% # Replace NA with "NA" in specific columns
+  mutate(
+    `Drug regimen` = case_when(
+      `Drug regimen` == "single" ~ "1",  # If "single", replace with "1"
+      `Drug regimen` != "single" ~ ">1", # If not "single", replace with ">1"
+      TRUE ~ as.character(`Drug regimen`)  # Keep other values unchanged (if any)
+    )) %>%
   arrange(Category, Study)
 
 # Create the LaTeX table
@@ -1688,6 +1722,7 @@ print(
   sanitize.text.function = identity
 )
 
+write.xlsx(dat5HT_tbl, "./results/serotonin_studies.xlsx")
 
 ```
 
