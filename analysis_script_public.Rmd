@@ -30,8 +30,9 @@ library("kableExtra")
 library(gt)
 library(pagedown)
 library("openxlsx")
+library(stringr)
 
-
+reference_numbers <- "author_ref_numbers.xlsx" # stores the manuscript reference numbers associated with each study 
 # Parameters
 w_method <- "rm_toster_default" # Method for computing d for within participant designs. using the Cousineau and Goulet-Pelletier (2021) method in toster: https://cloud.r-project.org/web/packages/TOSTER/vignettes/SMD_calcs.html#fn7
 w_method_w <- "dz" # only for within-subject designs
@@ -51,6 +52,9 @@ datAll <- read.csv("2024_08_27_final_metaanalysis.csv", strip.white = T)
 datAll_avPav <- read.csv("2024_08_27_aversive_pavlovian_w.csv", strip.white = T) # 5HT within-subject aversive pav 
 datAll_mb_w <- read.csv("2024_08_27_mb_w.csv", strip.white = T) # DA within-subject model-based/flexibility
 datAll_risk_w <- read.csv("2024_08_27_risk_w.csv", strip.white = T) # DA within-subject risk
+
+# Add column with the correct reference number in manuscript to use for forest plots (JAMA psychiatry requirement)
+datAll <- match_ref("author_ref_numbers.xlsx", datAll) 
 
 # Check the data
 assert("NAs in N drug",
@@ -641,6 +645,30 @@ rma_simple_forest <- function(category,
     }
   }
   
+  # ADD THE REFERENCE NUMBER AS SUPERSCRIPT 
+  if (neuromodulator=='5HT') {
+    categories_with_ref <- c("reward learning sensitivity", "punishment learning sensitivity", 
+                             "aversive pavlovian", "appetitive pavlovian", 
+                             "reward discounting", "reward vigour")
+  } else if (neuromodulator=='DA') {
+    categories_with_ref <- c("reward learning sensitivity", "punishment learning sensitivity", 
+                             "aversive pavlovian", "reward discounting", "reward vigour")
+  }
+  
+  include_ref_no <- category %in% categories_with_ref
+  
+  # Create author year + superscript for forestplots in the main manuscript
+  if (savename == 'secondary_cat' | startsWith(savename, "aversive pavl w") | startsWith(savename, "mb w") | startsWith(savename, "risk w") | savename == 'drug_accord_orig_drugaction') {
+    slab_label_authorY <-  rma_model$data$AuthorY
+  } else {
+    slab_label_authorY <- if (include_ref_no) {
+      # mapply(function(author, ref) bquote(.(author) ^ .(ref)), rma_model$data$AuthorY, rma_model$data$ref_no, SIMPLIFY = FALSE)
+      mapply(function(author, ref) as.expression(bquote(.(author)^.(ref))), rma_model$data$AuthorY, rma_model$data$ref_no)
+    } else {
+      rma_model$data$AuthorY  # Just the author name
+    }
+  }
+  
   
   if(expand_height){
     height <- height * 0.85 + height * 0.15 * (rma_model$k / 3)
@@ -656,7 +684,6 @@ rma_simple_forest <- function(category,
     return(text)
   }
   
-
   
   # Create figure first time - before adding Ns
   p <- forest(
@@ -667,7 +694,7 @@ rma_simple_forest <- function(category,
       drug_activity, drug_category, drug_dose, as.character(Year), Author
     )),
     slab = (paste0(
-      AuthorY, " (", ifelse(grepl("^[A-Z]+$", drug_dose), drug_dose, capitalize_first_letter(drug_dose)), ")"
+      slab_label_authorY, " (", ifelse(grepl("^[A-Z]+$", drug_dose), drug_dose, capitalize_first_letter(drug_dose)), ")"
     )),
     pch = 19,    
     transf = transf,
@@ -724,7 +751,7 @@ rma_simple_forest <- function(category,
     order = row_number(paste(
       drug_activity, drug_category, drug_dose, as.character(Year), Author
     )),
-    slab = AuthorY,
+    slab = slab_label_authorY,
     transf = transf,
     mar = c(0,0,0,0),
     xlim = xlim,
@@ -878,7 +905,6 @@ lapply(unique(datDA_filter$secondary_category),
        'secondary_cat')
 
 
-
 if (savename_forest=='drug_accord_orig_drugaction') {
   rma_simple_forest("",rma_DA_overall_r,"DA",category_labels,category_headers, 'drug_orig_overall_r')
   rma_simple_forest("",rma_DA_overall_p,  "DA",category_labels, category_headers,'drug_orig_overall_p')
@@ -892,8 +918,6 @@ if (savename_forest=='drug_accord_orig_drugaction') {
 }
 
 rma_simple_forest(unique(datAll_orig_w$Category),rma_5HT_av_pav_w,"5HT",category_labels,category_headers, 'aversive pavl w')
-
-
 rma_simple_forest(unique(datAll_mb_w_DA$Category),rma_DA_mb_w,"DA",category_labels,category_headers, 'mb w')
 rma_simple_forest(unique(datAll_risk_w_DA$Category),rma_DA_risk_w,"DA",category_labels,category_headers, 'risk w')
 

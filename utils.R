@@ -1,5 +1,61 @@
 # This script contains high level functions to simplify reading analysis_script.Rmd
 
+# this function preprocesses the references in the paper to allow us to match correct reference number with correct study in forest plots (JAMA psychiatry policy)
+match_ref <- function(reference_file, datALL) {
+  # Load the Excel file
+  file_path <- reference_file #"author_ref_numbers.xlsx" 
+  df_ref <- read_excel(file_path)
+  
+  # Function to extract the first author and year
+  extract_author_and_year <- function(reference) {
+    # Extract the first author (before the first space)
+    author <- str_extract(reference, "^[^ ]+") 
+    
+    # Extract the year (four digits after a journal name)
+    year <- str_extract(reference, "\\.\\s*([1-2][0-9]{3})[;\\(]") %>%
+      str_extract("[1-2][0-9]{3}")  # Extract only the year
+    
+    # Handle missing values
+    if (is.na(author)) author <- "Unknown"
+    if (is.na(year)) year <- "Unknown"
+    
+    # Apply specific modifications - which it does not correctly amend
+    if (author == "Erfanian") {
+      author <- "Erfanian Abdoust"
+    } else if (author == "de") {
+      author <- "de Wit"
+    } else if (author == "Smith" && year == "Unknown") {
+      year <- "2024"
+    } else if (author == "Westbrook" && year == "Unknown") {
+      year <- "2024"
+    }
+    
+    return(paste(author, year, sep = ", "))
+  }
+  
+  # Apply the function to the second column
+  df_ref <- df_ref %>%
+    rename(ref_no = 1) %>% 
+    mutate(`AuthorY` = sapply(df_ref[[2]], extract_author_and_year)) %>%
+    relocate(`AuthorY`, .after = 1)  # Move new column to the correct position
+  
+  # Save the modified dataframe to a new Excel file
+  # write.xlsx(df_ref, "updated_author_ref_numbers.xlsx")
+  
+  # Matching "AuthorY" in datALL with "Author, Year" in df_ref and creating 'ref_no' column
+  # Extract reference number (assumed to be in the first column)
+  df_ref_select <- df_ref %>%
+    select(`AuthorY`, ref_no)
+  
+  # Perform the join, ensuring missing matches get NA
+  datALL_new <- datAll %>%
+    left_join(df_ref_select, by = "AuthorY")
+  
+  return(datALL_new)  # Return the modified datALL with the ref_no column
+}
+
+
+
 # This function computes d, vard, and r by design type and available stats,
 # and coalesces into columns for d, vard, and r
 
