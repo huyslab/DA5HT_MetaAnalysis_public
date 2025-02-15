@@ -874,7 +874,7 @@ category_headers <- list(
 lapply(unique(dat5HT_final_cat$Category),
        rma_simple_forest,
        rma_5HT,
-       "5-HT",
+       "5HT",
        category_labels,
        category_headers,
        savename_forest)
@@ -891,7 +891,7 @@ lapply(unique(datDA_final_cat$Category),
 lapply(unique(dat5HT_filter$secondary_category),
        rma_simple_forest,
        rma_5HT_secondary,
-       "5-HT",
+       "5HT",
        category_labels,
        category_headers,
        'secondary_cat')
@@ -1207,7 +1207,9 @@ latex_table_5HT <- xtable(serotonin_table)
 ## STEP 1: Is there a significant influence of the moderator? Testing the significant difference between subgroups
 
 # List of moderators you want to analyze
-moderators <- c("drug_activity", "simplified_drug_target2", "task_name2", "age_total", "female_total", "acute")
+# moderators <- c("drug_activity", "simplified_drug_target2", "task_name2", "age_total", "female_total", "acute")
+moderators <- c("drug_activity")
+# all_model_results
 
 # List of overall datasets
 overall_dataframes <- list(mod_DA_overall_r = datDA_final_overall_r, mod_DA_overall_p = datDA_final_overall_p, mod_5HT_overall_r = dat5HT_final_overall_r, mod_5HT_overall_p = dat5HT_final_overall_p)
@@ -1279,6 +1281,7 @@ names(all_model_results) <- moderators
 # re-specify the model with an intercept and dummy to see where the difference is (which group is larger/smaller)
 DA_pun_lr <- rma(d, vard, mods = ~ task_name2, data = datDA_final_cat %>% filter(Category == 'punishment learning sensitivity'))
 DA_pun_lr_dir <- rma(d, vard, mods = ~ task_name2-1, data = datDA_final_cat %>% filter(Category == 'punishment learning sensitivity'))
+
 
 # 5HT: drug type: overall reward (3; agonist=7, antagonist=13), model-based (7; agonist=4, antagonist=6)
 HT5_rew_o <- rma(d, vard, mods = ~ drug_activity, data = dat5HT_final_overall_r) # %>% filter(!Author == 'Luo'))
