@@ -23,6 +23,7 @@ Then open your web browser (preferably Chrome) and navigate to
     ├── 2024_08_27_aversive_pavlovian_w.csv // Data file listing all 5HT within-subject aversive Pavlovian studies
     ├── 2024_08_27_mb_w.csv // Data file listing all DA within-subject model-based/flexibility studies
     ├── 2024_08_27_risk_w.csv // Data file listing all DA within-subject risk attitude studies
+    ├── author_ref_numbers.xlsx // spreadsheet listing all reference numbers from manuscript (make sure Guitart-Masip 2024 review is removed). Used for adding reference numbers to manuscript forest plots
     ├── analysis_script_public.Rmd // Main analysis file
     ├── compute_effect_size.R // Functions to compute effect sizes from reported statistics
     ├── utils.R // Higher level functions used to simplify analysis_script_public.Rmd
