@@ -1207,8 +1207,8 @@ latex_table_5HT <- xtable(serotonin_table)
 ## STEP 1: Is there a significant influence of the moderator? Testing the significant difference between subgroups
 
 # List of moderators you want to analyze
-# moderators <- c("drug_activity", "simplified_drug_target2", "task_name2", "age_total", "female_total", "acute")
-moderators <- c("drug_activity")
+moderators <- c("drug_activity", "simplified_drug_target2", "task_name2", "age_total", "female_total", "acute")
+# moderators <- c("drug_activity")
 # all_model_results
 
 # List of overall datasets
